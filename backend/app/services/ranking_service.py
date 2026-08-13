@@ -46,3 +46,30 @@ class RankingService:
         if max_score - min_score < 1e-7:
             return [0.0 if s <= 0 else 1.0 for s in scores]
         return [(s - min_score) / (max_score - min_score) for s in scores]
+
+    def semantic_rerank(self, query_embedding: np.ndarray, article_embeddings: np.ndarray, articles: List[dict]) -> List[dict]:
+        """Rank articles by cosine similarity to the query embedding (semantic-only).
+
+        Returns articles sorted by `semantic_score` (0..1 normalized), and sets
+        `relevance_score` equal to the `semantic_score` for compatibility with responses.
+        """
+        if len(articles) != article_embeddings.shape[0]:
+            raise ValueError("Number of articles and embeddings do not match")
+
+        if article_embeddings.size == 0:
+            return articles
+
+        semantic_scores = cosine_similarity(query_embedding.reshape(1, -1), article_embeddings).flatten()
+        normalized_semantic = self._normalize_scores(semantic_scores.tolist())
+
+        scored = []
+        for i, article in enumerate(articles):
+            semantic_score = float(normalized_semantic[i]) if len(normalized_semantic) > i else 0.0
+            scored.append({
+                **article,
+                "semantic_score": round(semantic_score, 4),
+                "keyword_score": 0.0,
+                "relevance_score": round(semantic_score, 4),
+            })
+
+        return sorted(scored, key=lambda item: item["relevance_score"], reverse=True)

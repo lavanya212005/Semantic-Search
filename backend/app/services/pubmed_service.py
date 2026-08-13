@@ -1,8 +1,11 @@
 import xml.etree.ElementTree as ET
 from typing import Any, Dict, List, Optional
 import httpx
+import logging
 
 from app.config import PUBMED_BASE_URL, PUBMED_EMAIL, PUBMED_API_KEY
+
+logger = logging.getLogger(__name__)
 from app.utils.helpers import normalize_text
 
 ESARCH_URL = f"{PUBMED_BASE_URL}/esearch.fcgi"
@@ -26,18 +29,26 @@ class PubMedService:
             "retstart": (page - 1) * limit,
             "retmax": limit,
             "usehistory": "n",
+            "tool": "bio_semantic_search",
         }
         if PUBMED_EMAIL:
             params["email"] = PUBMED_EMAIL
         if PUBMED_API_KEY:
             params["api_key"] = PUBMED_API_KEY
 
+        # Log parameters without exposing API key
+        safe_params = {k: v for k, v in params.items() if k != "api_key"}
+        logger.debug("ESearch request: %s %s", ESARCH_URL, safe_params)
+
         response = self.client.get(ESARCH_URL, params=params)
         response.raise_for_status()
         payload = response.json()
 
-        count = int(payload.get("esearchresult", {}).get("count", 0))
-        ids = payload.get("esearchresult", {}).get("idlist", [])
+        esr = payload.get("esearchresult", {})
+        count = int(esr.get("count", 0)) if esr.get("count") is not None else 0
+        ids = esr.get("idlist", []) or []
+
+        logger.debug("ESearch response count=%s ids_returned=%s", count, len(ids))
         return {"count": count, "ids": ids}
 
     def fetch_articles(self, ids: List[str]) -> List[Dict[str, Any]]:

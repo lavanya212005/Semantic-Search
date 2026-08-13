@@ -5,7 +5,9 @@ import { Search, SlidersHorizontal, ArrowUpRight, ChevronDown, ChevronUp, FileSe
    Config
 --------------------------------------------------------- */
 const API_URL = (typeof process !== 'undefined' && process.env && process.env.REACT_APP_API_URL) || '';
-const USE_DEMO_DATA = true; // set false once your real API is wired up
+// If an API URL is provided via REACT_APP_API_URL, automatically use the live backend
+// (which performs semantic embedding + re-ranking). Otherwise, fall back to demo data.
+const USE_DEMO_DATA = !(API_URL && API_URL.length > 0);
 
 /* ---------------------------------------------------------
    Demo dataset — lets you see the full design without a
@@ -193,9 +195,40 @@ export default function App() {
     } catch (err) {
       if (USE_DEMO_DATA) {
         // No live backend configured — show demo data so the UI is visible.
-        const filtered = articleType
-          ? DEMO_ARTICLES.filter((a) => true) // demo set has no type field; keep as-is
-          : DEMO_ARTICLES;
+        // Filter demo articles by the current query so different searches return sensible results.
+        const q = query ? query.trim().toLowerCase() : '';
+        let filtered = DEMO_ARTICLES;
+
+        if (q) {
+          // Tokenize query and match any token against demo article fields.
+          // Also do a simple plural normalization (eg: sugars -> sugar, diaries -> diary).
+          const tokens = q
+            .split(/\W+/)
+            .map((t) => t.trim())
+            .filter(Boolean);
+
+          const normalize = (t) => {
+            if (t.endsWith('ies')) return t.slice(0, -3) + 'y';
+            if (t.endsWith('s')) return t.slice(0, -1);
+            return t;
+          };
+
+          filtered = DEMO_ARTICLES.filter((a) => {
+            const hay = `${a.title || ''} ${a.abstract || ''} ${a.authors || ''} ${a.journal || ''}`.toLowerCase();
+            return tokens.some((tok) => {
+              const n = normalize(tok);
+              return hay.includes(tok) || (n !== tok && hay.includes(n));
+            });
+          });
+        }
+
+        // Keep other demo filters in place (articleType / freeFullText) if demo data supports them.
+        if (articleType) {
+          // demo items do not have an article type field, so this is a no-op for now.
+          // If you add types to DEMO_ARTICLES, update this filter accordingly.
+          filtered = filtered.filter((a) => true);
+        }
+
         setResults(filtered);
         setTotal(filtered.length);
         setPage(1);

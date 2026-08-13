@@ -3,6 +3,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import router
 from app.config import ALLOWED_ORIGINS
+import logging
+
+logging.basicConfig(level=logging.INFO)
 
 app = FastAPI(
     title="BioMed Semantic Search Backend",

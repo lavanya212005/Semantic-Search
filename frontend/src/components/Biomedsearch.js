@@ -5,7 +5,7 @@ import { Search, SlidersHorizontal, ArrowUpRight, ChevronDown, ChevronUp, FileSe
    Config
 --------------------------------------------------------- */
 const API_URL = (typeof process !== 'undefined' && process.env && process.env.REACT_APP_API_URL) || '';
-const USE_DEMO_DATA = true; // set false once your real API is wired up
+const USE_DEMO_DATA = !API_URL; // automatically use demo data when no API_URL configured
 
 /* ---------------------------------------------------------
    Demo dataset — lets you see the full design without a
