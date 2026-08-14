@@ -25,7 +25,7 @@ class RankingService:
             for mesh in article.get("mesh_terms", []):
                 keyword_matches += count_keyword_matches(mesh, query_terms)
 
-            keyword_score = min(keyword_matches / max(len(query_terms), 1), 1.0)
+            keyword_score = min(keyword_matches / max(len(query_terms), 1), 1.0) if query_terms else 0.0
             semantic_score = float(normalized_semantic[i]) if len(normalized_semantic) > i else 0.0
             relevance_score = self.semantic_weight * semantic_score + self.keyword_weight * keyword_score
 

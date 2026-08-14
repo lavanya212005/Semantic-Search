@@ -4,10 +4,11 @@ import { Search, SlidersHorizontal, ArrowUpRight, ChevronDown, ChevronUp, FileSe
 /* ---------------------------------------------------------
    Config
 --------------------------------------------------------- */
-const API_URL = (typeof process !== 'undefined' && process.env && process.env.REACT_APP_API_URL) || '';
-// If an API URL is provided via REACT_APP_API_URL, automatically use the live backend
-// (which performs semantic embedding + re-ranking). Otherwise, fall back to demo data.
-const USE_DEMO_DATA = !(API_URL && API_URL.length > 0);
+const DEFAULT_API_URL = 'http://127.0.0.1:8000/api/search';
+const API_URL = (typeof process !== 'undefined' && process.env && process.env.REACT_APP_API_URL) || DEFAULT_API_URL;
+// Use the local backend by default so searches reach PubMed and semantic ranking.
+// Demo data remains only for intentionally disabling the backend or debugging the UI.
+const USE_DEMO_DATA = false;
 
 /* ---------------------------------------------------------
    Demo dataset — lets you see the full design without a

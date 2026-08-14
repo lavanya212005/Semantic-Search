@@ -37,7 +37,20 @@ def extract_concepts(query: str) -> List[str]:
 
 
 def build_pubmed_term(query: str, article_types: List[str] = None, year_from: int | None = None, year_to: int | None = None, free_full_text: bool | None = None) -> str:
-    query_parts = [query]
+    normalized_query = preprocess_query(query or "")
+    query_parts = []
+
+    if normalized_query:
+        lower_query = normalized_query.lower()
+        if "heart attack" in lower_query:
+            term_group = " OR ".join([
+                "heart attack",
+                "myocardial infarction",
+                "acute coronary syndrome",
+            ])
+            query_parts.append(f"({term_group})")
+        else:
+            query_parts.append(normalized_query)
 
     if article_types:
         type_filters = []
@@ -64,7 +77,7 @@ def build_pubmed_term(query: str, article_types: List[str] = None, year_from: in
     if free_full_text:
         query_parts.append("free full text[Filter]")
 
-    return " AND ".join(query_parts)
+    return " AND ".join(query_parts) if query_parts else ""
 
 
 def normalize_text(value: str) -> str:

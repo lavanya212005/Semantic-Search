@@ -22,6 +22,9 @@ class PubMedService:
         page: int = 1,
         limit: int = 10,
     ) -> Dict[str, Any]:
+        page = max(1, int(page or 1))
+        limit = max(1, int(limit or 10))
+
         params = {
             "db": "pubmed",
             "retmode": "json",
@@ -36,19 +39,33 @@ class PubMedService:
         if PUBMED_API_KEY:
             params["api_key"] = PUBMED_API_KEY
 
-        # Log parameters without exposing API key
         safe_params = {k: v for k, v in params.items() if k != "api_key"}
-        logger.debug("ESearch request: %s %s", ESARCH_URL, safe_params)
+        logger.info("ESearch request final_pubmed_query=%s params=%s", term, safe_params)
 
         response = self.client.get(ESARCH_URL, params=params)
         response.raise_for_status()
         payload = response.json()
 
-        esr = payload.get("esearchresult", {})
-        count = int(esr.get("count", 0)) if esr.get("count") is not None else 0
-        ids = esr.get("idlist", []) or []
+        esr = payload.get("esearchresult", {}) if isinstance(payload, dict) else {}
+        if not isinstance(esr, dict):
+            logger.warning("PubMed ESearch response did not include esearchresult: %s", payload)
+            return {"count": 0, "ids": []}
 
-        logger.debug("ESearch response count=%s ids_returned=%s", count, len(ids))
+        count_raw = esr.get("count", "0")
+        try:
+            count = int(str(count_raw or "0"))
+        except (TypeError, ValueError):
+            count = 0
+
+        ids = esr.get("idlist", []) or []
+        ids = [str(item) for item in ids]
+
+        logger.info(
+            "PubMed ESearch summary: final_pubmed_query=%s total_count=%s pmids_returned=%s",
+            term,
+            count,
+            len(ids),
+        )
         return {"count": count, "ids": ids}
 
     def fetch_articles(self, ids: List[str]) -> List[Dict[str, Any]]:
@@ -66,7 +83,9 @@ class PubMedService:
 
         response = self.client.get(EFETCH_URL, params=params)
         response.raise_for_status()
-        return self.parse_pubmed_xml(response.text)
+        articles = self.parse_pubmed_xml(response.text)
+        logger.info("PubMed EFetch summary: requested_pmid_count=%s fetched_articles=%s", len(ids), len(articles))
+        return articles
 
     def parse_pubmed_xml(self, xml_text: str) -> List[Dict[str, Any]]:
         root = ET.fromstring(xml_text)

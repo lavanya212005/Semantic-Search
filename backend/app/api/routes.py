@@ -31,7 +31,7 @@ def search_pubmed(
     year_from: Optional[int] = Query(None, description="Filter articles published after or in this year."),
     year_to: Optional[int] = Query(None, description="Filter articles published before or in this year."),
     article_types: Optional[str] = Query(None, description="Comma-separated article types like Review, Clinical Trial, Meta-Analysis."),
-    free_full_text: Optional[bool] = Query(False, description="Return only articles with free full text.") ,
+    free_full_text: Optional[bool] = Query(False, description="Return only articles with free full text."),
     limit: Optional[int] = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT, description="Maximum number of articles returned."),
     page: Optional[int] = Query(DEFAULT_PAGE, ge=1, description="Page number for pagination."),
     semantic_only: Optional[bool] = Query(False, description="If true, rank results by semantic similarity only."),
@@ -43,30 +43,34 @@ def search_pubmed(
     article_types_list = [t.strip() for t in article_types.split(",") if t.strip()] if article_types else []
     search_term = build_pubmed_term(cleaned_query, article_types_list, year_from, year_to, free_full_text)
 
-    logger.info("Search request: user_query='%s' final_pubmed_query='%s'", query, search_term)
+    logger.info("Search request: original_user_query='%s' final_pubmed_query='%s'", query, search_term)
     try:
-        # initial retrieval: use PubMed keyword search to get candidate ids
-        # note: use RE_RANK_TOP_K as the number to request from ESearch (retmax)
-        search_result = pubmed_service.search_ids(search_term, page=page, limit=RE_RANK_TOP_K)
+        search_result = pubmed_service.search_ids(search_term, page=page, limit=limit)
     except httpx.HTTPError:
         logger.exception("ESearch failed for query=%s", search_term)
-        raise HTTPException(status_code=503, detail="Unable to reach PubMed search service.")
+        raise HTTPException(status_code=503, detail="Unable to connect to PubMed. Please try again.")
 
     total_results = search_result.get("count", 0)
     ids = search_result.get("ids", [])
-    if not ids:
-        # If ESearch returned zero ids, log and return a clear 404
-        logger.info("ESearch returned zero ids for query='%s' (count=%s)", search_term, total_results)
-        raise HTTPException(status_code=404, detail="No PubMed articles found for the given query.")
+    if total_results == 0 or not ids:
+        logger.info("PubMed returned zero results for query='%s' (count=%s, ids=%s)", search_term, total_results, len(ids))
+        raise HTTPException(status_code=404, detail="No PubMed articles found for this query.")
 
-    # limit candidates used for semantic re-ranking
-    candidate_ids = ids[:RE_RANK_TOP_K]
+    candidate_ids = ids[: min(len(ids), RE_RANK_TOP_K)]
     try:
         articles = pubmed_service.fetch_articles(candidate_ids)
-        logger.info("Fetched %s articles for %s PMIDs", len(articles), len(candidate_ids))
+        logger.info("Fetched %s articles for %s PMIDs from query='%s'", len(articles), len(candidate_ids), search_term)
     except httpx.HTTPError:
-        logger.exception("EFetch failed for pmids=%s", candidate_ids)
-        raise HTTPException(status_code=503, detail="Unable to fetch PubMed article details.")
+        logger.exception("EFetch failed for pmids=%s on query=%s", candidate_ids, search_term)
+        raise HTTPException(status_code=503, detail="Unable to connect to PubMed. Please try again.")
+
+    if not articles and total_results > 0:
+        logger.warning(
+            "PubMed ESearch returned %s total results and %s PMIDs, but EFetch produced zero parsed articles for query='%s'.",
+            total_results,
+            len(candidate_ids),
+            search_term,
+        )
 
     query_terms = [term.strip() for term in cleaned_query.split() if term.strip()]
     query_embedding = embedding_service.get_query_embedding(cleaned_query)
@@ -76,7 +80,6 @@ def search_pubmed(
     else:
         scored_articles = ranking_service.score_articles(cleaned_query, query_terms, articles, query_embedding, article_embeddings)
 
-    # apply pagination / final limit after re-ranking
     scored_articles = scored_articles[:limit]
 
     top_mesh_terms = {}
@@ -92,19 +95,19 @@ def search_pubmed(
 
     results = [
         {
-            "pmid": article["pmid"],
-            "title": article["title"],
-            "abstract": article["abstract"],
-            "authors": article["authors"],
-            "journal": article["journal"],
-            "publication_date": article["publication_date"],
-            "article_type": article["article_type"],
-            "mesh_terms": article["mesh_terms"],
-            "doi": article["doi"],
-            "pubmed_url": f"https://pubmed.ncbi.nlm.nih.gov/{article['pmid']}/",
-            "semantic_score": article["semantic_score"],
-            "keyword_score": article["keyword_score"],
-            "relevance_score": article["relevance_score"],
+            "pmid": article.get("pmid", ""),
+            "title": article.get("title", ""),
+            "abstract": article.get("abstract", ""),
+            "authors": article.get("authors", []),
+            "journal": article.get("journal", ""),
+            "publication_date": article.get("publication_date", ""),
+            "article_type": article.get("article_type", ""),
+            "mesh_terms": article.get("mesh_terms", []),
+            "doi": article.get("doi", ""),
+            "pubmed_url": f"https://pubmed.ncbi.nlm.nih.gov/{article.get('pmid', '')}/",
+            "semantic_score": article.get("semantic_score", 0.0),
+            "keyword_score": article.get("keyword_score", 0.0),
+            "relevance_score": article.get("relevance_score", 0.0),
         }
         for article in scored_articles
     ]
