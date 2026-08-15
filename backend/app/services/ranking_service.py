@@ -14,8 +14,8 @@ class RankingService:
         if len(articles) != article_embeddings.shape[0]:
             raise ValueError("Number of articles and embeddings do not match")
 
-        semantic_scores = cosine_similarity(query_embedding.reshape(1, -1), article_embeddings).flatten() if article_embeddings.size else np.zeros(len(articles))
-        normalized_semantic = self._normalize_scores(semantic_scores.tolist())
+        # Compute normalized semantic scores using shared method
+        normalized_semantic = self._compute_semantic_scores(query_embedding, article_embeddings)
 
         scored = []
         for i, article in enumerate(articles):
@@ -47,6 +47,29 @@ class RankingService:
             return [0.0 if s <= 0 else 1.0 for s in scores]
         return [(s - min_score) / (max_score - min_score) for s in scores]
 
+    def _compute_semantic_scores(self, query_embedding: np.ndarray, article_embeddings: np.ndarray) -> List[float]:
+        """Compute normalized semantic similarity scores.
+        
+        Calculates cosine similarity between query and articles, then normalizes
+        scores to [0, 1] range. This is used by both score_articles() and
+        semantic_rerank() to ensure consistency.
+        
+        Args:
+            query_embedding: Query embedding vector (shape: (dim,))
+            article_embeddings: Article embeddings (shape: (n_articles, dim))
+        
+        Returns:
+            List of normalized semantic scores in [0, 1] range
+        """
+        if article_embeddings.size == 0:
+            return []
+        
+        semantic_scores = cosine_similarity(
+            query_embedding.reshape(1, -1), 
+            article_embeddings
+        ).flatten()
+        return self._normalize_scores(semantic_scores.tolist())
+
     def semantic_rerank(self, query_embedding: np.ndarray, article_embeddings: np.ndarray, articles: List[dict]) -> List[dict]:
         """Rank articles by cosine similarity to the query embedding (semantic-only).
 
@@ -56,11 +79,8 @@ class RankingService:
         if len(articles) != article_embeddings.shape[0]:
             raise ValueError("Number of articles and embeddings do not match")
 
-        if article_embeddings.size == 0:
-            return articles
-
-        semantic_scores = cosine_similarity(query_embedding.reshape(1, -1), article_embeddings).flatten()
-        normalized_semantic = self._normalize_scores(semantic_scores.tolist())
+        # Use shared semantic scoring method for consistency
+        normalized_semantic = self._compute_semantic_scores(query_embedding, article_embeddings)
 
         scored = []
         for i, article in enumerate(articles):

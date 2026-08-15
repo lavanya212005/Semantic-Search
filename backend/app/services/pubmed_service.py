@@ -4,6 +4,7 @@ import httpx
 import logging
 
 from app.config import PUBMED_BASE_URL, PUBMED_EMAIL, PUBMED_API_KEY
+from app.utils.rate_limiter import RateLimiter
 
 logger = logging.getLogger(__name__)
 from app.utils.helpers import normalize_text
@@ -15,6 +16,9 @@ EFETCH_URL = f"{PUBMED_BASE_URL}/efetch.fcgi"
 class PubMedService:
     def __init__(self) -> None:
         self.client = httpx.Client(timeout=15.0)
+        # NCBI E-utilities rate limit: 3 requests/sec with API key, 1/3 sec without
+        # Using 2 req/sec as a conservative buffer to avoid hitting limits under load
+        self.rate_limiter = RateLimiter(max_requests=2, time_window_seconds=1.0)
 
     def search_ids(
         self,
@@ -42,6 +46,7 @@ class PubMedService:
         safe_params = {k: v for k, v in params.items() if k != "api_key"}
         logger.info("ESearch request final_pubmed_query=%s params=%s", term, safe_params)
 
+        self.rate_limiter.acquire()  # Enforce rate limit before external call
         response = self.client.get(ESARCH_URL, params=params)
         response.raise_for_status()
         payload = response.json()
@@ -81,6 +86,7 @@ class PubMedService:
         if PUBMED_API_KEY:
             params["api_key"] = PUBMED_API_KEY
 
+        self.rate_limiter.acquire()  # Enforce rate limit before external call
         response = self.client.get(EFETCH_URL, params=params)
         response.raise_for_status()
         articles = self.parse_pubmed_xml(response.text)
