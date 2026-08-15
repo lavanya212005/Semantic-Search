@@ -8,81 +8,60 @@ def preprocess_query(query: str) -> str:
 
     query = query.strip()
     query = re.sub(r"\s+", " ", query)
-    query = re.sub(r"[^\w\s\-\/:,.?()\%\+]+", " ", query)
+    query = re.sub(r"[^\w\s\-\/:,.?()\%\+\*]+", " ", query)
     query = re.sub(r"\s+", " ", query)
     return query.strip()
 
 
+STOPWORDS = {
+    "what", "which", "where", "when", "how", "does", "do", "the", "and", "for",
+    "with", "about", "that", "this", "are", "can", "show", "find", "papers",
+    "articles", "studies", "research", "related", "recent", "latest", "new",
+    "effect", "effects", "role", "impact", "between", "from", "into",
+}
+
+
 def extract_concepts(query: str) -> List[str]:
+    """Query-driven concept extraction: strips stopwords, keeps meaningful
+    domain terms in the order they appear. No hardcoded topic list."""
     query = preprocess_query(query)
     if not query:
         return []
 
-    concepts = []
-    lower_query = query.lower()
-    if "tumor microenvironment" in lower_query:
-        concepts.append("tumor microenvironment")
-    if "immunotherapy" in lower_query:
-        concepts.append("immunotherapy")
-    if "kidney function" in lower_query:
-        concepts.append("kidney function")
-    if "diabetes" in lower_query:
-        concepts.append("diabetes")
-    if "breast cancer" in lower_query:
-        concepts.append("breast cancer")
-    if not concepts:
-        tokens = [token for token in re.split(r"[\s,]+", query) if len(token) > 3]
-        concepts = tokens[:3]
-    return concepts
+    tokens = [t for t in re.split(r"[\s,]+", query.lower()) if t]
+    concepts = [t for t in tokens if len(t) > 3 and t not in STOPWORDS]
+    # de-duplicate while preserving order
+    seen = set()
+    ordered = []
+    for c in concepts:
+        if c not in seen:
+            seen.add(c)
+            ordered.append(c)
+    return ordered[:5]
 
 
-def build_boolean_pubmed_query(query: str) -> str:
-    """Turns a simple natural-language query into a PubMed Boolean string.
-
-    Example:
-        "medicine that reduces fever in children"
-        -> "(fever[tiab] OR pyrexia[tiab]) AND (children[tiab] OR pediatric[tiab])"
+def truncate_term(word: str, min_root: int = 4) -> str:
+    """Convert a single word into a PubMed wildcard truncation term
+    (e.g. 'immunotherapy' -> 'immunothe*') so word variants
+    (therapy/therapies/therapeutic) are matched automatically.
+    Short words are returned unchanged since truncating them would
+    match too broadly to be useful.
     """
-    normalized = preprocess_query(query or "")
-    if not normalized:
-        return ""
+    word = word.strip().lower()
+    if len(word) <= 6 or "*" in word:
+        return word
+    root_len = max(min_root, int(len(word) * 0.7))
+    return word[:root_len] + "*"
 
-    query_lower = normalized.lower()
-    synonym_map = {
-        "fever": ["fever", "pyrexia"],
-        "children": ["children", "child", "pediatric", "paediatric"],
-        "cancer": ["cancer", "carcinoma", "tumor", "tumour", "malignancy"],
-        "diabetes": ["diabetes", "hyperglycemia", "glycemic disorder"],
-        "asthma": ["asthma", "bronchial asthma"],
-        "pain": ["pain", "ache", "dolor"],
-        "infection": ["infection", "infectious disease"],
-        "influenza": ["influenza", "flu"],
-    }
 
-    def make_group(terms: List[str]) -> str:
-        seen = []
-        for term in terms:
-            clean = preprocess_query(term)
-            if not clean:
-                continue
-            if clean.lower() not in [item.lower() for item in seen]:
-                seen.append(clean)
-        if not seen:
-            return ""
-        return "(" + " OR ".join(f"{term}[tiab]" for term in seen) + ")"
-
-    groups = []
-    for concept, synonyms in synonym_map.items():
-        if concept in query_lower or any(synonym in query_lower for synonym in synonyms):
-            groups.append(make_group(synonyms))
-
-    if not groups:
-        tokens = [token for token in re.split(r"[\s,]+", normalized) if len(token) > 3 and token.lower() not in {"that", "with", "from", "into", "this", "these", "those"}]
-        if not tokens:
-            return normalized
-        groups.append(make_group(tokens[:3]))
-
-    return " AND ".join(group for group in groups if group)
+def build_truncated_variant(query: str) -> str:
+    """Build a wildcard-truncated version of a query's significant words,
+    so PubMed's own ESearch retrieves word-variant matches (e.g. 'editing'
+    also finds 'edited', 'edits') without the user needing to know
+    truncation syntax exists."""
+    tokens = [t for t in re.split(r"[\s,]+", query.lower()) if t]
+    truncated = [truncate_term(t) for t in tokens if t not in STOPWORDS]
+    return " AND ".join(truncated) if truncated else ""
 
 
 def build_pubmed_term(query: str, article_types: List[str] = None, year_from: int | None = None, year_to: int | None = None, free_full_text: bool | None = None) -> str:
@@ -99,7 +78,11 @@ def build_pubmed_term(query: str, article_types: List[str] = None, year_from: in
             ])
             query_parts.append(f"({term_group})")
         else:
-            query_parts.append(normalized_query)
+            truncated_variant = build_truncated_variant(normalized_query)
+            if truncated_variant and truncated_variant != normalized_query.lower():
+                query_parts.append(f"({normalized_query} OR ({truncated_variant}))")
+            else:
+                query_parts.append(normalized_query)
 
     if article_types:
         type_filters = []
@@ -144,3 +127,20 @@ def count_keyword_matches(text: str, query_terms: List[str]) -> int:
         if term.lower() in normalized:
             score += 1
     return score
+
+
+def truncate_text(text: str, max_length: int = 300, suffix: str = "...") -> str:
+    """Shorten text for snippet display without cutting a word in half.
+
+    - Returns the text unchanged if it's already within max_length.
+    - Otherwise cuts at the last full word before max_length and appends suffix.
+    """
+    if not text:
+        return ""
+
+    text = text.strip()
+    if len(text) <= max_length:
+        return text
+
+    truncated = text[:max_length].rsplit(" ", 1)[0]
+    return truncated.rstrip(",.;:") + suffix
