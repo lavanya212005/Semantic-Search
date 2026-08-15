@@ -62,8 +62,12 @@ class EmbeddingService:
                     # fallthrough to compute
                     pass
 
-            # need to compute
-            texts_to_compute.append(f"{article.get('title','')} {article.get('abstract','')}")
+            title = article.get("title", "") or ""
+            abstract = article.get("abstract", "") or ""
+            mesh_terms = article.get("mesh_terms", []) or []
+            mesh_text = " ".join(str(term) for term in mesh_terms if term)
+            article_text = " ".join(part for part in [title, abstract, mesh_text] if part)
+            texts_to_compute.append(article_text)
             idxs_to_compute.append(i)
             pmids_to_store.append(pmid)
 

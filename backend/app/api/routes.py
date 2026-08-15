@@ -52,6 +52,7 @@ def search_pubmed(
 
     total_results = search_result.get("count", 0)
     ids = search_result.get("ids", [])
+    logger.info("PubMed ESearch summary: original_query='%s' final_query='%s' total_count=%s pmids_returned=%s", query, search_term, total_results, len(ids))
     if total_results == 0 or not ids:
         logger.info("PubMed returned zero results for query='%s' (count=%s, ids=%s)", search_term, total_results, len(ids))
         raise HTTPException(status_code=404, detail="No PubMed articles found for this query.")
@@ -59,7 +60,7 @@ def search_pubmed(
     candidate_ids = ids[: min(len(ids), RE_RANK_TOP_K)]
     try:
         articles = pubmed_service.fetch_articles(candidate_ids)
-        logger.info("Fetched %s articles for %s PMIDs from query='%s'", len(articles), len(candidate_ids), search_term)
+        logger.info("PubMed EFetch summary: original_query='%s' final_query='%s' requested_pmids=%s fetched_articles=%s", query, search_term, len(candidate_ids), len(articles))
     except httpx.HTTPError:
         logger.exception("EFetch failed for pmids=%s on query=%s", candidate_ids, search_term)
         raise HTTPException(status_code=503, detail="Unable to connect to PubMed. Please try again.")
@@ -73,6 +74,7 @@ def search_pubmed(
         )
 
     query_terms = [term.strip() for term in cleaned_query.split() if term.strip()]
+    logger.info("Semantic ranking input: original_query='%s' query_terms=%s article_count=%s", query, query_terms, len(articles))
     query_embedding = embedding_service.get_query_embedding(cleaned_query)
     article_embeddings = embedding_service.get_article_embeddings(articles)
     if semantic_only:
@@ -80,6 +82,7 @@ def search_pubmed(
     else:
         scored_articles = ranking_service.score_articles(cleaned_query, query_terms, articles, query_embedding, article_embeddings)
 
+    logger.info("Semantic ranking finished: ranked_articles=%s", len(scored_articles))
     scored_articles = scored_articles[:limit]
 
     top_mesh_terms = {}

@@ -13,91 +13,51 @@ def preprocess_query(query: str) -> str:
     return query.strip()
 
 
+STOPWORDS = {
+    "what", "which", "where", "when", "how", "does", "do", "the", "and", "for",
+    "with", "about", "that", "this", "are", "can", "show", "find", "papers",
+    "articles", "studies", "research", "related", "recent", "latest", "new",
+    "effect", "effects", "role", "impact", "between", "from", "into",
+}
+
+
 def extract_concepts(query: str) -> List[str]:
+    """Query-driven concept extraction: strips stopwords, keeps meaningful
+    domain terms in the order they appear. No hardcoded topic list."""
     query = preprocess_query(query)
     if not query:
         return []
 
-    concepts = []
-    lower_query = query.lower()
-    if "tumor microenvironment" in lower_query:
-        concepts.append("tumor microenvironment")
-    if "immunotherapy" in lower_query:
-        concepts.append("immunotherapy")
-    if "kidney function" in lower_query:
-        concepts.append("kidney function")
-    if "diabetes" in lower_query:
-        concepts.append("diabetes")
-    if "breast cancer" in lower_query:
-        concepts.append("breast cancer")
-    if not concepts:
-        tokens = [token for token in re.split(r"[\s,]+", query) if len(token) > 3]
-        concepts = tokens[:3]
-    return concepts
+    tokens = [t for t in re.split(r"[\s,]+", query.lower()) if t]
+    concepts = [t for t in tokens if len(t) > 3 and t not in STOPWORDS]
+    seen = set()
+    ordered = []
+    for concept in concepts:
+        if concept not in seen:
+            seen.add(concept)
+            ordered.append(concept)
+    return ordered[:5]
 
 
-def build_boolean_pubmed_query(query: str) -> str:
-    """Turns a simple natural-language query into a PubMed Boolean string.
-
-    Example:
-        "medicine that reduces fever in children"
-        -> "(fever[tiab] OR pyrexia[tiab]) AND (children[tiab] OR pediatric[tiab])"
-    """
-    normalized = preprocess_query(query or "")
-    if not normalized:
+def truncate_text(value: str, max_length: int = 200) -> str:
+    if not value:
         return ""
-
-    query_lower = normalized.lower()
-    synonym_map = {
-        "fever": ["fever", "pyrexia"],
-        "children": ["children", "child", "pediatric", "paediatric"],
-        "cancer": ["cancer", "carcinoma", "tumor", "tumour", "malignancy"],
-        "diabetes": ["diabetes", "hyperglycemia", "glycemic disorder"],
-        "asthma": ["asthma", "bronchial asthma"],
-        "pain": ["pain", "ache", "dolor"],
-        "infection": ["infection", "infectious disease"],
-        "influenza": ["influenza", "flu"],
-    }
-
-    def make_group(terms: List[str]) -> str:
-        seen = []
-        for term in terms:
-            clean = preprocess_query(term)
-            if not clean:
-                continue
-            if clean.lower() not in [item.lower() for item in seen]:
-                seen.append(clean)
-        if not seen:
-            return ""
-        return "(" + " OR ".join(f"{term}[tiab]" for term in seen) + ")"
-
-    groups = []
-    for concept, synonyms in synonym_map.items():
-        if concept in query_lower or any(synonym in query_lower for synonym in synonyms):
-            groups.append(make_group(synonyms))
-
-    if not groups:
-        tokens = [token for token in re.split(r"[\s,]+", normalized) if len(token) > 3 and token.lower() not in {"that", "with", "from", "into", "this", "these", "those"}]
-        if not tokens:
-            return normalized
-        groups.append(make_group(tokens[:3]))
-
-    return " AND ".join(group for group in groups if group)
+    value = normalize_text(value)
+    if len(value) <= max_length:
+        return value
+    return value[: max_length - 3].rstrip() + "..."
 
 
 def build_pubmed_term(query: str, article_types: List[str] = None, year_from: int | None = None, year_to: int | None = None, free_full_text: bool | None = None) -> str:
-    normalized_query = preprocess_query(query or "")
+    normalized_query = truncate_text(preprocess_query(query or ""), max_length=250)
     query_parts = []
 
     if normalized_query:
-        lower_query = normalized_query.lower()
-        if "heart attack" in lower_query:
-            term_group = " OR ".join([
-                "heart attack",
-                "myocardial infarction",
-                "acute coronary syndrome",
-            ])
-            query_parts.append(f"({term_group})")
+        key_terms = extract_concepts(normalized_query)
+        mesh_candidates = [f"{term}[MeSH Terms]" for term in key_terms[:3]]
+
+        if mesh_candidates:
+            query_parts.append(f"({normalized_query} OR {' OR '.join(mesh_candidates)})")
         else:
             query_parts.append(normalized_query)
 
