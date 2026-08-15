@@ -13,27 +13,31 @@ def preprocess_query(query: str) -> str:
     return query.strip()
 
 
+STOPWORDS = {
+    "what", "which", "where", "when", "how", "does", "do", "the", "and", "for",
+    "with", "about", "that", "this", "are", "can", "show", "find", "papers",
+    "articles", "studies", "research", "related", "recent", "latest", "new",
+    "effect", "effects", "role", "impact", "between", "from", "into",
+}
+
+
 def extract_concepts(query: str) -> List[str]:
+    """Query-driven concept extraction: strips stopwords, keeps meaningful
+    domain terms in the order they appear. No hardcoded topic list."""
     query = preprocess_query(query)
     if not query:
         return []
 
-    concepts = []
-    lower_query = query.lower()
-    if "tumor microenvironment" in lower_query:
-        concepts.append("tumor microenvironment")
-    if "immunotherapy" in lower_query:
-        concepts.append("immunotherapy")
-    if "kidney function" in lower_query:
-        concepts.append("kidney function")
-    if "diabetes" in lower_query:
-        concepts.append("diabetes")
-    if "breast cancer" in lower_query:
-        concepts.append("breast cancer")
-    if not concepts:
-        tokens = [token for token in re.split(r"[\s,]+", query) if len(token) > 3]
-        concepts = tokens[:3]
-    return concepts
+    tokens = [t for t in re.split(r"[\s,]+", query.lower()) if t]
+    concepts = [t for t in tokens if len(t) > 3 and t not in STOPWORDS]
+    # de-duplicate while preserving order
+    seen = set()
+    ordered = []
+    for c in concepts:
+        if c not in seen:
+            seen.add(c)
+            ordered.append(c)
+    return ordered[:5]
 
 
 def build_pubmed_term(query: str, article_types: List[str] = None, year_from: int | None = None, year_to: int | None = None, free_full_text: bool | None = None) -> str:
