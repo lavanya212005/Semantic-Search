@@ -16,7 +16,6 @@ ENV/
 # Environment files
 .env
 .env.*
-!.env.example
 
 # FastAPI / app generated
 *.log
