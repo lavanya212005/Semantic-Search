@@ -75,6 +75,17 @@ def test_heart_attack_query_expands_to_related_pubmed_terms():
     assert "OR" in term
 
 
+def test_build_boolean_pubmed_query_from_natural_language():
+    from app.utils.helpers import build_boolean_pubmed_query
+    query = build_boolean_pubmed_query("medicine that reduces fever in children")
+    assert "fever[tiab]" in query.lower()
+    assert "pyrexia[tiab]" in query.lower()
+    assert "children[tiab]" in query.lower()
+    assert "pediatric[tiab]" in query.lower()
+    assert "AND" in query.upper()
+    assert "OR" in query.upper()
+
+
 def test_pubmed_esearch_uses_requested_page_and_limit(monkeypatch):
     import httpx
     from app.services.pubmed_service import PubMedService

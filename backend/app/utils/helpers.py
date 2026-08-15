@@ -36,6 +36,55 @@ def extract_concepts(query: str) -> List[str]:
     return concepts
 
 
+def build_boolean_pubmed_query(query: str) -> str:
+    """Turns a simple natural-language query into a PubMed Boolean string.
+
+    Example:
+        "medicine that reduces fever in children"
+        -> "(fever[tiab] OR pyrexia[tiab]) AND (children[tiab] OR pediatric[tiab])"
+    """
+    normalized = preprocess_query(query or "")
+    if not normalized:
+        return ""
+
+    query_lower = normalized.lower()
+    synonym_map = {
+        "fever": ["fever", "pyrexia"],
+        "children": ["children", "child", "pediatric", "paediatric"],
+        "cancer": ["cancer", "carcinoma", "tumor", "tumour", "malignancy"],
+        "diabetes": ["diabetes", "hyperglycemia", "glycemic disorder"],
+        "asthma": ["asthma", "bronchial asthma"],
+        "pain": ["pain", "ache", "dolor"],
+        "infection": ["infection", "infectious disease"],
+        "influenza": ["influenza", "flu"],
+    }
+
+    def make_group(terms: List[str]) -> str:
+        seen = []
+        for term in terms:
+            clean = preprocess_query(term)
+            if not clean:
+                continue
+            if clean.lower() not in [item.lower() for item in seen]:
+                seen.append(clean)
+        if not seen:
+            return ""
+        return "(" + " OR ".join(f"{term}[tiab]" for term in seen) + ")"
+
+    groups = []
+    for concept, synonyms in synonym_map.items():
+        if concept in query_lower or any(synonym in query_lower for synonym in synonyms):
+            groups.append(make_group(synonyms))
+
+    if not groups:
+        tokens = [token for token in re.split(r"[\s,]+", normalized) if len(token) > 3 and token.lower() not in {"that", "with", "from", "into", "this", "these", "those"}]
+        if not tokens:
+            return normalized
+        groups.append(make_group(tokens[:3]))
+
+    return " AND ".join(group for group in groups if group)
+
+
 def build_pubmed_term(query: str, article_types: List[str] = None, year_from: int | None = None, year_to: int | None = None, free_full_text: bool | None = None) -> str:
     normalized_query = preprocess_query(query or "")
     query_parts = []
