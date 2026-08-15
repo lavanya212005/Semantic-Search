@@ -97,7 +97,7 @@ class PubMedService:
             pmid_el = medline.find('PMID') if medline is not None else None
             pmid = pmid_el.text if pmid_el is not None else ""
 
-            title = article_data.find('ArticleTitle').text if article_data is not None and article_data.find('ArticleTitle') is not None else ""
+            title = self._extract_title(article_data)
             abstract_text = self._extract_abstract(article_data)
             authors = self._extract_authors(article_data)
             journal = self._extract_journal(article_data)
@@ -124,6 +124,16 @@ class PubMedService:
                 }
             )
         return articles
+
+    def _extract_title(self, article_data: Optional[ET.Element]) -> str:
+        if article_data is None:
+            return ""
+        title_el = article_data.find('ArticleTitle')
+        if title_el is None:
+            return ""
+        # itertext() walks through nested tags (e.g. italicized gene names)
+        # so the full title is captured, not just text before the first nested tag.
+        return ''.join(title_el.itertext())
 
     def _extract_abstract(self, article_data: Optional[ET.Element]) -> str:
         if article_data is None:

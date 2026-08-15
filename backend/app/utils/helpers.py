@@ -8,7 +8,7 @@ def preprocess_query(query: str) -> str:
 
     query = query.strip()
     query = re.sub(r"\s+", " ", query)
-    query = re.sub(r"[^\w\s\-\/:,.?()\%\+]+", " ", query)
+    query = re.sub(r"[^\w\s\-\/:,.?()\%\+\*]+", " ", query)
     query = re.sub(r"\s+", " ", query)
     return query.strip()
 
@@ -40,6 +40,30 @@ def extract_concepts(query: str) -> List[str]:
     return ordered[:5]
 
 
+def truncate_term(word: str, min_root: int = 4) -> str:
+    """Convert a single word into a PubMed wildcard truncation term
+    (e.g. 'immunotherapy' -> 'immunothe*') so word variants
+    (therapy/therapies/therapeutic) are matched automatically.
+    Short words are returned unchanged since truncating them would
+    match too broadly to be useful.
+    """
+    word = word.strip().lower()
+    if len(word) <= 6 or "*" in word:
+        return word
+    root_len = max(min_root, int(len(word) * 0.7))
+    return word[:root_len] + "*"
+
+
+def build_truncated_variant(query: str) -> str:
+    """Build a wildcard-truncated version of a query's significant words,
+    so PubMed's own ESearch retrieves word-variant matches (e.g. 'editing'
+    also finds 'edited', 'edits') without the user needing to know
+    truncation syntax exists."""
+    tokens = [t for t in re.split(r"[\s,]+", query.lower()) if t]
+    truncated = [truncate_term(t) for t in tokens if t not in STOPWORDS]
+    return " AND ".join(truncated) if truncated else ""
+
+
 def build_pubmed_term(query: str, article_types: List[str] = None, year_from: int | None = None, year_to: int | None = None, free_full_text: bool | None = None) -> str:
     normalized_query = preprocess_query(query or "")
     query_parts = []
@@ -54,7 +78,11 @@ def build_pubmed_term(query: str, article_types: List[str] = None, year_from: in
             ])
             query_parts.append(f"({term_group})")
         else:
-            query_parts.append(normalized_query)
+            truncated_variant = build_truncated_variant(normalized_query)
+            if truncated_variant and truncated_variant != normalized_query.lower():
+                query_parts.append(f"({normalized_query} OR ({truncated_variant}))")
+            else:
+                query_parts.append(normalized_query)
 
     if article_types:
         type_filters = []
