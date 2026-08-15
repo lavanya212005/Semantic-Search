@@ -8,7 +8,7 @@ from app.models.schemas import ErrorResponse, SearchResponse
 from app.services.embedding_service import EmbeddingService
 from app.services.pubmed_service import PubMedService
 from app.services.ranking_service import RankingService
-from app.utils.helpers import build_pubmed_term, extract_concepts, preprocess_query
+from app.utils.helpers import build_pubmed_term, extract_concepts, preprocess_query, truncate_text
 import logging
 
 logger = logging.getLogger(__name__)
@@ -97,7 +97,7 @@ def search_pubmed(
         {
             "pmid": article.get("pmid", ""),
             "title": article.get("title", ""),
-            "abstract": article.get("abstract", ""),
+            "abstract": truncate_text(article.get("abstract", ""), 300),
             "authors": article.get("authors", []),
             "journal": article.get("journal", ""),
             "publication_date": article.get("publication_date", ""),

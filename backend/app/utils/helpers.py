@@ -99,3 +99,20 @@ def count_keyword_matches(text: str, query_terms: List[str]) -> int:
         if term.lower() in normalized:
             score += 1
     return score
+
+
+def truncate_text(text: str, max_length: int = 300, suffix: str = "...") -> str:
+    """Shorten text for snippet display without cutting a word in half.
+
+    - Returns the text unchanged if it's already within max_length.
+    - Otherwise cuts at the last full word before max_length and appends suffix.
+    """
+    if not text:
+        return ""
+
+    text = text.strip()
+    if len(text) <= max_length:
+        return text
+
+    truncated = text[:max_length].rsplit(" ", 1)[0]
+    return truncated.rstrip(",.;:") + suffix
