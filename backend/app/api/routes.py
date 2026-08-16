@@ -3,7 +3,7 @@ from fastapi.responses import JSONResponse
 from typing import List, Optional
 import httpx
 
-from app.config import DEFAULT_LIMIT, DEFAULT_PAGE, MAX_LIMIT, RE_RANK_TOP_K, USE_HYBRID_RETRIEVAL
+from app.config import DEFAULT_LIMIT, DEFAULT_PAGE, MAX_LIMIT, RE_RANK_TOP_K, USE_HYBRID_RETRIEVAL, MIN_RELEVANCE_THRESHOLD
 from app.models.schemas import ErrorResponse, SearchResponse
 from app.services.embedding_service import EmbeddingService
 from app.services.pubmed_service import PubMedService
@@ -44,8 +44,11 @@ def search_pubmed(
     search_term = build_pubmed_term(cleaned_query, article_types_list, year_from, year_to, free_full_text)
 
     logger.info("Search request: original_user_query='%s' final_pubmed_query='%s'", query, search_term)
+    candidate_pool_limit = RE_RANK_TOP_K
     try:
-        search_result = pubmed_service.search_ids(search_term, page=page, limit=limit)
+        # Rank the full configured candidate pool before pagination so the best
+        # matches are ordered correctly across the current page selection.
+        search_result = pubmed_service.search_ids(search_term, page=1, limit=candidate_pool_limit)
     except httpx.HTTPError:
         logger.exception("ESearch failed for query=%s", search_term)
         raise HTTPException(status_code=503, detail="Unable to connect to PubMed. Please try again.")
@@ -75,12 +78,40 @@ def search_pubmed(
     query_terms = [term.strip() for term in cleaned_query.split() if term.strip()]
     query_embedding = embedding_service.get_query_embedding(cleaned_query)
     article_embeddings = embedding_service.get_article_embeddings(articles)
+    
+    # STEP 1: Score and rank all fetched articles by relevance_score (descending)
+    # The ranking_service.score_articles() or semantic_rerank() returns articles
+    # sorted by relevance_score from highest to lowest.
     if semantic_only:
         scored_articles = ranking_service.semantic_rerank(query_embedding, article_embeddings, articles)
     else:
         scored_articles = ranking_service.score_articles(cleaned_query, query_terms, articles, query_embedding, article_embeddings)
 
-    scored_articles = scored_articles[:limit]
+    # STEP 1.5: Filter out low-relevance articles (0% or near-0% match)
+    # Only keep articles that meet the minimum relevance threshold
+    filtered_articles = [
+        article for article in scored_articles 
+        if article.get("relevance_score", 0.0) >= MIN_RELEVANCE_THRESHOLD
+    ]
+    
+    if not filtered_articles:
+        # If all articles are filtered out, still return something for UX
+        # Use top 1 article if available, or raise 404
+        if scored_articles:
+            filtered_articles = scored_articles[:1]
+        else:
+            raise HTTPException(status_code=404, detail="No articles with meaningful relevance scores found.")
+    
+    scored_articles = filtered_articles
+
+    # STEP 2: Apply pagination AFTER ranking and filtering (not before)
+    # This ensures continuous ranking across pages:
+    # - Page 1: articles ranked #1-#10 (indices 0-9)
+    # - Page 2: articles ranked #11-#20 (indices 10-19)
+    # - Page 3: articles ranked #21-#30 (indices 20-29)
+    # etc.
+    offset = (page - 1) * limit
+    scored_articles = scored_articles[offset : offset + limit]
 
     top_mesh_terms = {}
     for article in scored_articles:
@@ -112,9 +143,13 @@ def search_pubmed(
         for article in scored_articles
     ]
 
+    # Calculate total meaningful results (after filtering low-relevance articles)
+    total_meaningful_results = len(filtered_articles)
+
     response = {
         "query": cleaned_query,
-        "total_results": total_results,
+        "total_results": total_results,  # Total PubMed index results
+        "total_meaningful_results": total_meaningful_results,  # After filtering by relevance threshold
         "page": page,
         "limit": limit,
         "top_mesh_terms": mesh_items[:10],

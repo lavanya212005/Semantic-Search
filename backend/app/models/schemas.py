@@ -25,7 +25,8 @@ class MeshTermCount(BaseModel):
 
 class SearchResponse(BaseModel):
     query: str
-    total_results: int
+    total_results: int  # Total results in PubMed index
+    total_meaningful_results: int = 0  # Results after filtering by relevance threshold
     page: int
     limit: int
     top_mesh_terms: List[MeshTermCount] = Field(default_factory=list)

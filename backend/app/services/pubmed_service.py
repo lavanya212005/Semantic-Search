@@ -29,8 +29,8 @@ class PubMedService:
             "db": "pubmed",
             "retmode": "json",
             "term": term,
-            "retstart": (page - 1) * limit,
-            "retmax": limit,
+            "retstart": max(0, (page - 1) * limit),
+            "retmax": max(1, limit),
             "usehistory": "n",
             "tool": "bio_semantic_search",
         }
@@ -68,24 +68,29 @@ class PubMedService:
         )
         return {"count": count, "ids": ids}
 
-    def fetch_articles(self, ids: List[str]) -> List[Dict[str, Any]]:
+    def fetch_articles(self, ids: List[str], batch_size: int = 200) -> List[Dict[str, Any]]:
         if not ids:
             return []
-        params = {
-            "db": "pubmed",
-            "retmode": "xml",
-            "id": ",".join(ids),
-        }
-        if PUBMED_EMAIL:
-            params["email"] = PUBMED_EMAIL
-        if PUBMED_API_KEY:
-            params["api_key"] = PUBMED_API_KEY
 
-        response = self.client.get(EFETCH_URL, params=params)
-        response.raise_for_status()
-        articles = self.parse_pubmed_xml(response.text)
-        logger.info("PubMed EFetch summary: requested_pmid_count=%s fetched_articles=%s", len(ids), len(articles))
-        return articles
+        all_articles: List[Dict[str, Any]] = []
+        for start in range(0, len(ids), batch_size):
+            batch_ids = ids[start:start + batch_size]
+            params = {
+                "db": "pubmed",
+                "retmode": "xml",
+                "id": ",".join(batch_ids),
+            }
+            if PUBMED_EMAIL:
+                params["email"] = PUBMED_EMAIL
+            if PUBMED_API_KEY:
+                params["api_key"] = PUBMED_API_KEY
+
+            response = self.client.get(EFETCH_URL, params=params)
+            response.raise_for_status()
+            all_articles.extend(self.parse_pubmed_xml(response.text))
+
+        logger.info("PubMed EFetch summary: requested_pmid_count=%s fetched_articles=%s", len(ids), len(all_articles))
+        return all_articles
 
     def parse_pubmed_xml(self, xml_text: str) -> List[Dict[str, Any]]:
         root = ET.fromstring(xml_text)

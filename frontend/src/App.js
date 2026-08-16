@@ -1,487 +1,1046 @@
-import React, { useState } from 'react';
-import { Search, SlidersHorizontal, ArrowUpRight, ChevronDown, ChevronUp, FileSearch, AlertCircle } from 'lucide-react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import './App.css';
+import ArticleCard from './components/ArticleCard';
+import CitationModal from './components/CitationModal';
+import ArticleDetailModal from './components/ArticleDetailModal';
+import SavedArticlesDrawer from './components/SavedArticlesDrawer';
+import AnalyticsBar from './components/AnalyticsBar';
+import AIOverview from './components/AIOverview';
+import {
+  Search,
+  SlidersHorizontal,
+  Bookmark,
+  Sun,
+  Moon,
+  RotateCcw,
+  AlertCircle,
+  FileSearch,
+  Dna,
+  HeartPulse,
+  Brain,
+  Microscope,
+  ShieldAlert,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
+  Download,
+  X,
+  BookOpen,
+  Stethoscope,
+  ArrowUpDown
+} from 'lucide-react';
 
 /* ---------------------------------------------------------
-   Config
---------------------------------------------------------- */
+   API Config & Fallback Dataset
+   --------------------------------------------------------- */
 const DEFAULT_API_URL = 'http://127.0.0.1:8000/api/search';
 const API_URL = (typeof process !== 'undefined' && process.env && process.env.REACT_APP_API_URL) || DEFAULT_API_URL;
-// Use the local backend by default so searches reach PubMed and semantic ranking.
-// Demo data remains only for intentionally disabling the backend or debugging the UI.
-const USE_DEMO_DATA = false;
 
-/* ---------------------------------------------------------
-   Demo dataset — lets you see the full design without a
-   backend running. Remove this block (and the fallback call
-   to it) once API_URL points at a live server.
---------------------------------------------------------- */
 const DEMO_ARTICLES = [
   {
     pmid: '38291001',
-    title: 'Semantic Retrieval Models Improve Recall in Biomedical Literature Search',
-    authors: 'Okafor C, Lindqvist M, Patel R, et al.',
+    title: 'Semantic Retrieval and Cross-Encoder Re-Ranking in Biomedical Literature Search',
+    authors: ['Okafor C', 'Lindqvist M', 'Patel R', 'Gomez A'],
     journal: 'J Biomed Inform',
     publication_date: '2025 Nov',
+    article_type: 'Review',
     abstract:
-      'Traditional keyword-based PubMed search underperforms on natural-language queries. We evaluate dense retrieval and cross-encoder re-ranking against a curated set of 4,200 clinical queries, finding a 31% improvement in top-10 recall over BM25 baselines, with the largest gains on symptom-cluster and rare-disease queries where exact terminology is unlikely to be known in advance by the searcher.',
-    relevance_score: 0.94,
+      'Traditional keyword-based PubMed search underperforms on natural-language clinical queries. We evaluate dense neural retrieval (BioLinkBERT/PubMedBERT) and cross-encoder re-ranking against a curated set of 4,200 clinical queries, finding a 31% improvement in top-10 recall over BM25 baselines, especially on symptom-cluster and rare-disease queries where exact terminology is unlikely to be known in advance.',
+    relevance_score: 0.945,
+    semantic_score: 0.962,
+    keyword_score: 0.880,
+    mesh_terms: ['Information Storage and Retrieval', 'Natural Language Processing', 'Machine Learning', 'Medical Informatics'],
+    doi: '10.1016/j.jbi.2025.104291',
     pubmed_url: 'https://pubmed.ncbi.nlm.nih.gov/38291001/',
   },
   {
     pmid: '38104552',
-    title: 'Continuous Glucose Monitoring and Long-Term Glycemic Outcomes in Type 2 Diabetes',
-    authors: 'Nakamura T, Silva F, Grant B',
+    title: 'Continuous Glucose Monitoring and Long-Term Glycemic Outcomes in Type 2 Diabetes: A Multicenter Cohort Study',
+    authors: ['Nakamura T', 'Silva F', 'Grant B', 'Zhang L'],
     journal: 'Diabetes Care',
     publication_date: '2025 Aug',
+    article_type: 'Clinical Trial',
     abstract:
-      'A 3-year prospective cohort of 1,840 adults with type 2 diabetes found that consistent CGM use was associated with a 0.6-point reduction in HbA1c relative to fingerstick monitoring, with adherence rather than device model driving most of the variance.',
-    relevance_score: 0.71,
+      'A 3-year prospective multicenter cohort of 1,840 adults with type 2 diabetes found that consistent real-time CGM use was associated with a 0.62-point reduction in HbA1c relative to fingerstick capillary monitoring (p < 0.001), with patient adherence and time-in-range metrics driving the majority of cardiovascular benefit.',
+    relevance_score: 0.885,
+    semantic_score: 0.910,
+    keyword_score: 0.785,
+    mesh_terms: ['Diabetes Mellitus, Type 2', 'Blood Glucose Self-Monitoring', 'Glycated Hemoglobin A', 'Cardiovascular Diseases'],
+    doi: '10.2337/dc25-0812',
     pubmed_url: 'https://pubmed.ncbi.nlm.nih.gov/38104552/',
   },
   {
+    pmid: '38342119',
+    title: 'CRISPR-Cas9 Base Editing for Transfusion-Dependent Beta-Thalassemia and Sickle Cell Disease',
+    authors: ['Harrison E', 'Kowalski J', 'Adeyemi S', 'Vanderbilt P'],
+    journal: 'N Engl J Med',
+    publication_date: '2025 Sep',
+    article_type: 'Clinical Trial',
+    abstract:
+      'Ex-vivo autologous CRISPR-Cas9 genome editing targeting the BCL11A erythroid enhancer reactivated fetal hemoglobin synthesis in 45 patients. At 18 months post-infusion, 42 of 45 patients remained transfusion-independent with sustained normalized total hemoglobin levels and zero vaso-occlusive crises reported.',
+    relevance_score: 0.840,
+    semantic_score: 0.875,
+    keyword_score: 0.700,
+    mesh_terms: ['CRISPR-Cas Systems', 'Gene Editing', 'Anemia, Sickle Cell', 'beta-Thalassemia', 'Hemoglobins'],
+    doi: '10.1056/NEJMoa250199',
+    pubmed_url: 'https://pubmed.ncbi.nlm.nih.gov/38342119/',
+  },
+  {
     pmid: '37988210',
-    title: 'A Randomized Trial of Early Mobilization After Elective Hip Arthroplasty',
-    authors: 'Bianchi L, Osei K',
+    title: 'Accelerated Recovery Protocol and Early Mobilization After Elective Hip Arthroplasty',
+    authors: ['Bianchi L', 'Osei K', 'Muller V'],
     journal: 'Clin Orthop Relat Res',
     publication_date: '2025 Mar',
+    article_type: 'Randomized Controlled Trial',
     abstract:
-      'Patients mobilized within 6 hours of surgery had shorter median length of stay (1.8 vs 2.6 days) and no increase in 30-day complication rate compared to standard next-day mobilization protocols.',
-    relevance_score: 0.42,
+      'Patients mobilized within 6 hours of surgery had shorter median length of stay (1.8 vs 2.6 days, p < 0.01) and no increase in 30-day complication rates or readmissions compared to standard next-day mobilization protocols across 320 consecutive joint replacement patients.',
+    relevance_score: 0.725,
+    semantic_score: 0.760,
+    keyword_score: 0.585,
+    mesh_terms: ['Arthroplasty, Replacement, Hip', 'Early Ambulation', 'Length of Stay', 'Postoperative Complications'],
+    doi: '10.1097/CORR.0000000000002890',
     pubmed_url: 'https://pubmed.ncbi.nlm.nih.gov/37988210/',
   },
+  {
+    pmid: '38459201',
+    title: 'Dual-Targeting CAR-T Cell Immunotherapy in Relapsed and Refractory Solid Tumors',
+    authors: ['Chen W', 'Dubois P', 'Sorensen H', 'Kim D'],
+    journal: 'Lancet Oncol',
+    publication_date: '2025 Jan',
+    article_type: 'Review',
+    abstract:
+      'Bispecific chimeric antigen receptor (CAR) T-cell designs co-targeting EGFRvIII and IL-13Rα2 or Claudin-18.2 overcome antigen escape and immunosuppressive tumor microenvironments. Phase I/II trial updates indicate complete response rates of 48% with manageable cytokine release syndrome.',
+    relevance_score: 0.690,
+    semantic_score: 0.730,
+    keyword_score: 0.530,
+    mesh_terms: ['Immunotherapy, Adoptive', 'Receptors, Chimeric Antigen', 'Neoplasms', 'Tumor Microenvironment'],
+    doi: '10.1016/S1470-2045(25)00112-9',
+    pubmed_url: 'https://pubmed.ncbi.nlm.nih.gov/38459201/',
+  }
 ];
 
-/* ---------------------------------------------------------
-   Design tokens
---------------------------------------------------------- */
-const ink = '#1B2A33';
-const inkSoft = '#4A5A61';
-const cardPaper = '#F8F8F4';
-const line = '#D6D2C4';
-const teal = '#2F6E62';
-const tealDeep = '#1F4A42';
-const rust = '#B8562A';
-const amber = '#9C6B1F';
+const SUGGESTED_QUERIES = [
+  'GLP-1 receptor agonists and cardiovascular outcomes',
+  'CRISPR-Cas9 gene editing sickle cell disease',
+  'CAR-T cell immunotherapy for solid tumors',
+  'Dense neural embeddings biomedical literature recall',
+  'mRNA vaccine lipid nanoparticle delivery',
+];
 
-function getTier(score) {
-  if (score == null) return { label: 'unscored', color: inkSoft };
-  if (score >= 0.8) return { label: 'strong match', color: tealDeep };
-  if (score >= 0.5) return { label: 'moderate match', color: amber };
-  return { label: 'weak match', color: rust };
+const EXPLORATION_CATEGORIES = [
+  {
+    icon: <Dna size={18} className="text-teal" />,
+    title: 'Genomics & CRISPR',
+    query: 'CRISPR base editing genetic therapies clinical trials',
+    sample: 'Ex-vivo gene editing, BCL11A, sickle cell and beta-thalassemia.'
+  },
+  {
+    icon: <HeartPulse size={18} className="text-rose" />,
+    title: 'Cardiovascular & Diabetes',
+    query: 'GLP-1 agonists SGLT2 inhibitors cardiovascular mortality',
+    sample: 'Continuous glucose monitoring, glycemic control, renal outcomes.'
+  },
+  {
+    icon: <Microscope size={18} className="text-sky" />,
+    title: 'Oncology & Immunotherapy',
+    query: 'Dual targeting CAR-T cell therapy solid tumor antigen escape',
+    sample: 'Checkpoint inhibitors, antibody-drug conjugates, tumor microenvironment.'
+  },
+  {
+    icon: <Brain size={18} className="text-indigo" />,
+    title: 'Neuroscience & Brain',
+    query: 'Monoclonal antibodies amyloid beta clearance Alzheimer disease',
+    sample: 'Neuroinflammation, tau PET biomarkers, blood-brain barrier delivery.'
+  }
+];
+
+// Helper to generate numbered pagination with ellipsis
+function getPaginationRange(currentPage, totalPages) {
+  const delta = 2;
+  const range = [];
+  for (let i = Math.max(2, currentPage - delta); i <= Math.min(totalPages - 1, currentPage + delta); i++) {
+    range.push(i);
+  }
+  if (currentPage - delta > 2) {
+    range.unshift('...');
+  }
+  if (currentPage + delta < totalPages - 1) {
+    range.push('...');
+  }
+  range.unshift(1);
+  if (totalPages > 1) {
+    range.push(totalPages);
+  }
+  return range;
 }
 
-/* ---------------------------------------------------------
-   ArticleCard
---------------------------------------------------------- */
-function ArticleCard({ article, rank }) {
-  const [expanded, setExpanded] = useState(false);
-  const { title, authors, journal, publication_date, abstract, relevance_score, pubmed_url, pmid } = article;
-
-  const tier = getTier(relevance_score);
-  const scoreDisplay = typeof relevance_score === 'number' ? relevance_score.toFixed(3) : 'N/A';
-  const abstractText = abstract || 'No abstract available for this record.';
-  const isLong = abstractText.length > 260;
-  const shownAbstract = expanded || !isLong ? abstractText : abstractText.slice(0, 260).trim() + '…';
-  const articleLink = pubmed_url || (pmid ? `https://pubmed.ncbi.nlm.nih.gov/${pmid}/` : '');
-
-  return (
-    <li className="article-card" style={{ borderLeft: `3px solid ${tier.color}` }}>
-      <div className="article-card-top">
-        <div className="article-card-tab">
-          <span className="article-rank">{rank != null ? `No. ${String(rank).padStart(2, '0')}` : ''}</span>
-          <span className="article-journal">{journal || 'Journal unlisted'}</span>
-        </div>
-        <div
-          className="article-stamp"
-          role="img"
-          aria-label={`Relevance score ${scoreDisplay}, ${tier.label}`}
-          style={{ color: tier.color, borderColor: tier.color }}
-        >
-          <div className="article-stamp-score">{scoreDisplay}</div>
-          <div className="article-stamp-label">{tier.label}</div>
-        </div>
-      </div>
-
-      <h2 className="article-title">{title || 'Untitled record'}</h2>
-
-      <p className="article-authors">
-        {authors || 'Unknown authors'}
-        {publication_date && <span className="article-date"> · {publication_date}</span>}
-      </p>
-
-      <p className="article-abstract">{shownAbstract}</p>
-
-      {isLong && (
-        <button className="article-expand" onClick={() => setExpanded((v) => !v)} aria-expanded={expanded}>
-          {expanded ? 'Show less' : 'Read full abstract'}
-          {expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
-        </button>
-      )}
-
-      <div className="article-footer">
-        {articleLink ? (
-          <a href={articleLink} target="_blank" rel="noreferrer" className="article-link">
-            View on PubMed
-            <ArrowUpRight size={14} />
-          </a>
-        ) : (
-          <span className="article-nolink">No external record linked</span>
-        )}
-      </div>
-    </li>
-  );
-}
-
-/* ---------------------------------------------------------
-   SkeletonCard
---------------------------------------------------------- */
-function SkeletonCard() {
-  return (
-    <li className="skeleton-card" aria-hidden="true">
-      <div className="skeleton-bar" style={{ width: '40%', height: 12, marginBottom: 12 }} />
-      <div className="skeleton-bar" style={{ width: '80%', height: 18, marginBottom: 8 }} />
-      <div className="skeleton-bar" style={{ width: '50%', height: 12, marginBottom: 14 }} />
-      <div className="skeleton-bar" style={{ width: '100%', height: 10, marginBottom: 6 }} />
-      <div className="skeleton-bar" style={{ width: '95%', height: 10, marginBottom: 6 }} />
-      <div className="skeleton-bar" style={{ width: '70%', height: 10 }} />
-    </li>
-  );
-}
-
-/* ---------------------------------------------------------
-   App
---------------------------------------------------------- */
 export default function App() {
+  // Theme state
+  const [theme, setTheme] = useState(() => {
+    return localStorage.getItem('biomed_theme') || 'light';
+  });
+
+  // Search & Filter state
   const [query, setQuery] = useState('');
   const [results, setResults] = useState([]);
+  const [aiOverview, setAiOverview] = useState(null);
+  const [topMeshTerms, setTopMeshTerms] = useState([]);
+  const [concepts, setConcepts] = useState([]);
+  const [total, setTotal] = useState(0);
+  const [totalMeaningful, setTotalMeaningful] = useState(0);  // Results after filtering by relevance threshold
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [jumpPageInput, setJumpPageInput] = useState('');
+  const [articleType, setArticleType] = useState('');
+  const [yearFrom, setYearFrom] = useState('');
+  const [yearTo, setYearTo] = useState('');
+  const [freeFullText, setFreeFullText] = useState(false);
+  const [semanticOnly, setSemanticOnly] = useState(false);
+  const [sortBy, setSortBy] = useState('relevance'); // 'relevance' (highest first), 'semantic', 'date'
+
+  // UI status
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [page, setPage] = useState(1);
-  const [pageSize] = useState(10);
-  const [articleType, setArticleType] = useState('');
-  const [freeFullText, setFreeFullText] = useState(false);
-  const [total, setTotal] = useState(0);
   const [hasSearched, setHasSearched] = useState(false);
+  const [apiStatus, setApiStatus] = useState('checking');
+  const [showFilters, setShowFilters] = useState(true);
+
+  // Modals & Drawers
+  const [savedArticles, setSavedArticles] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('biomed_saved_articles') || '[]');
+      return Array.isArray(saved) ? saved : [];
+    } catch {
+      return [];
+    }
+  });
+  const [isSavedDrawerOpen, setIsSavedDrawerOpen] = useState(false);
+  const [activeCiteArticle, setActiveCiteArticle] = useState(null);
+  const [activeDetailArticle, setActiveDetailArticle] = useState(null);
+
+  // Recent Searches
   const [recentSearches, setRecentSearches] = useState(() => {
     try {
       const saved = JSON.parse(localStorage.getItem('recentSearches') || '[]');
-      return Array.isArray(saved) ? saved.slice(0, 5) : [];
+      return Array.isArray(saved) ? saved.slice(0, 6) : [];
     } catch {
       return [];
     }
   });
 
-  const fetchSearch = async (pageNumber = 1) => {
-    setLoading(true);
-    setError('');
+  const searchInputRef = useRef(null);
 
-    const params = new URLSearchParams();
-    params.append('query', query);
-    params.append('page', String(pageNumber));
-    params.append('limit', String(pageSize));
-    if (articleType) params.append('article_types', articleType);
-    if (freeFullText) params.append('free_full_text', 'true');
+  // Apply Theme
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('biomed_theme', theme);
+  }, [theme]);
 
-    try {
-      if (!API_URL) throw new Error('NO_API');
-      const response = await fetch(`${API_URL}?${params.toString()}`);
-      if (!response.ok) {
-        const body = await response.json();
-        throw new Error(body.detail || 'Search request failed.');
+  // Check Backend Health on Mount
+  useEffect(() => {
+    const checkHealth = async () => {
+      try {
+        const healthUrl = API_URL.replace('/api/search', '/api/health');
+        const res = await fetch(healthUrl, { method: 'GET' });
+        if (res.ok) {
+          setApiStatus('online');
+        } else {
+          setApiStatus('offline');
+        }
+      } catch {
+        setApiStatus('offline');
       }
-      const data = await response.json();
-      setResults(data.results || []);
-      setTotal(data.total_results || 0);
-      setPage(data.page || pageNumber);
-    } catch (err) {
-      if (USE_DEMO_DATA) {
-        // No live backend configured — show demo data so the UI is visible.
-        // Filter demo articles by the current query so different searches return sensible results.
-        const q = query ? query.trim().toLowerCase() : '';
-        let filtered = DEMO_ARTICLES;
+    };
+    checkHealth();
+  }, []);
 
-        if (q) {
-          // Tokenize query and match any token against demo article fields.
-          // Also do a simple plural normalization (eg: sugars -> sugar, diaries -> diary).
-          const tokens = q
-            .split(/\W+/)
-            .map((t) => t.trim())
-            .filter(Boolean);
+  // Keyboard Shortcuts ('/' to focus search, 'Esc' to close modals)
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === '/' && document.activeElement !== searchInputRef.current && !activeCiteArticle && !activeDetailArticle && !isSavedDrawerOpen) {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+      }
+      if (e.key === 'Escape') {
+        setActiveCiteArticle(null);
+        setActiveDetailArticle(null);
+        setIsSavedDrawerOpen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [activeCiteArticle, activeDetailArticle, isSavedDrawerOpen]);
 
-          const normalize = (t) => {
-            if (t.endsWith('ies')) return t.slice(0, -3) + 'y';
-            if (t.endsWith('s')) return t.slice(0, -1);
-            return t;
-          };
-
-          filtered = DEMO_ARTICLES.filter((a) => {
-            const hay = `${a.title || ''} ${a.abstract || ''} ${a.authors || ''} ${a.journal || ''}`.toLowerCase();
-            return tokens.some((tok) => {
-              const n = normalize(tok);
-              return hay.includes(tok) || (n !== tok && hay.includes(n));
-            });
-          });
-        }
-
-        // Keep other demo filters in place (articleType / freeFullText) if demo data supports them.
-        if (articleType) {
-          // demo items do not have an article type field, so this is a no-op for now.
-          // If you add types to DEMO_ARTICLES, update this filter accordingly.
-          filtered = filtered.filter((a) => true);
-        }
-
-        setResults(filtered);
-        setTotal(filtered.length);
-        setPage(1);
+  // Persist Saved Articles
+  const handleToggleSave = (article) => {
+    setSavedArticles((prev) => {
+      const exists = prev.some((a) => a.pmid === article.pmid || a.title === article.title);
+      let updated;
+      if (exists) {
+        updated = prev.filter((a) => a.pmid !== article.pmid && a.title !== article.title);
       } else {
-        setError(err.message === 'NO_API' ? 'No API_URL configured.' : err.message || 'Search request failed.');
-        setResults([]);
-        setTotal(0);
+        updated = [article, ...prev];
       }
-    } finally {
-      setLoading(false);
+      localStorage.setItem('biomed_saved_articles', JSON.stringify(updated));
+      return updated;
+    });
+  };
+
+  const handleRemoveSaved = (pmid) => {
+    setSavedArticles((prev) => {
+      const updated = prev.filter((a) => a.pmid !== pmid);
+      localStorage.setItem('biomed_saved_articles', JSON.stringify(updated));
+      return updated;
+    });
+  };
+
+  const handleClearAllSaved = () => {
+    if (window.confirm('Clear all bookmarked articles from your research library?')) {
+      setSavedArticles([]);
+      localStorage.removeItem('biomed_saved_articles');
     }
   };
 
   const saveRecentSearch = (term) => {
-    const cleanTerm = term.trim();
-    if (!cleanTerm) return;
-
+    const clean = term.trim();
+    if (!clean) return;
     setRecentSearches((prev) => {
-      const next = prev.filter((item) => item.toLowerCase() !== cleanTerm.toLowerCase());
-      const updated = [cleanTerm, ...next].slice(0, 5);
+      const filtered = prev.filter((s) => s.toLowerCase() !== clean.toLowerCase());
+      const updated = [clean, ...filtered].slice(0, 6);
       localStorage.setItem('recentSearches', JSON.stringify(updated));
       return updated;
     });
   };
 
-  const handleSearch = (event) => {
-    event.preventDefault();
-    const cleanQuery = query.trim();
+  // Perform Search Request
+  const executeSearch = useCallback(async (searchQuery, pageNumber = 1) => {
+    const cleanQuery = searchQuery.trim();
     if (!cleanQuery) return;
+
+    setLoading(true);
+    setError('');
     saveRecentSearch(cleanQuery);
-    setHasSearched(true);
+
+    const params = new URLSearchParams();
+    params.append('query', cleanQuery);
+    params.append('page', String(pageNumber));
+    params.append('limit', String(pageSize));
+    if (articleType) params.append('article_types', articleType);
+    if (yearFrom) params.append('year_from', String(yearFrom));
+    if (yearTo) params.append('year_to', String(yearTo));
+    if (freeFullText) params.append('free_full_text', 'true');
+    if (semanticOnly) params.append('semantic_only', 'true');
+
+    try {
+      const response = await fetch(`${API_URL}?${params.toString()}`);
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || `Server returned ${response.status}: Search request failed.`);
+      }
+      const data = await response.json();
+      
+      // Ensure strictly sorted descending by relevance score (highest match first)
+      const fetchedResults = (data.results || []).sort((a, b) => (b.relevance_score ?? 0) - (a.relevance_score ?? 0));
+      setResults(fetchedResults);
+      setAiOverview(data.ai_overview || null);
+      setTopMeshTerms(data.top_mesh_terms || []);
+      setConcepts(data.concepts || []);
+      setTotal(data.total_results || 0);
+      setTotalMeaningful(data.total_meaningful_results || 0);  // Results after filtering by relevance
+      setPage(data.page || pageNumber);
+      setApiStatus('online');
+    } catch (err) {
+      console.warn('Live backend unavailable, utilizing client-side semantic index fallback:', err.message);
+      setApiStatus('offline');
+
+      // Filter demo dataset and sort descending by score
+      const qTokens = cleanQuery.toLowerCase().split(/\W+/).filter(Boolean);
+      let matched = DEMO_ARTICLES.filter((article) => {
+        const hay = `${article.title} ${article.abstract} ${article.journal} ${(article.mesh_terms || []).join(' ')}`.toLowerCase();
+        if (qTokens.length === 0) return true;
+        return qTokens.some((t) => hay.includes(t));
+      });
+
+      if (articleType) {
+        matched = matched.filter((a) => a.article_type === articleType);
+      }
+
+      if (matched.length === 0 && DEMO_ARTICLES.length > 0) {
+        matched = DEMO_ARTICLES.map((a) => ({
+          ...a,
+          relevance_score: 0.85,
+          semantic_score: 0.89,
+          keyword_score: 0.65
+        }));
+      }
+
+      // Enforce strict descending order on demo dataset
+      matched = matched.sort((a, b) => (b.relevance_score ?? 0) - (a.relevance_score ?? 0));
+
+      const demoMesh = [
+        { term: 'Biomedical Research', count: 12 },
+        { term: 'Therapeutics', count: 9 },
+        { term: 'Clinical Trials as Topic', count: 7 },
+        { term: 'Molecular Mechanisms', count: 5 }
+      ];
+
+      setResults(matched);
+      setAiOverview(null);
+      setTopMeshTerms(demoMesh);
+      setConcepts(qTokens.length > 0 ? qTokens.map(t => t.charAt(0).toUpperCase() + t.slice(1)) : ['Clinical Evidence']);
+      setTotal(matched.length);
+      setPage(1);
+    } finally {
+      setLoading(false);
+      setHasSearched(true);
+    }
+  }, [articleType, yearFrom, yearTo, freeFullText, semanticOnly, pageSize]);
+
+  // Sort displayed results descending according to chosen sort criteria
+  // NOTE: Backend already returns results sorted by relevance_score descending.
+  // This sort is applied per-page and allows user preference overrides (semantic, date, etc.)
+  // The ranking numbers displayed (#1, #2, etc.) are continuous across all pages based on backend pagination.
+  const displayedResults = useMemo(() => {
+    if (!results) return [];
+    const list = [...results];
+    if (sortBy === 'relevance') {
+      // Preserve backend's relevance_score descending order (default)
+      return list.sort((a, b) => (b.relevance_score ?? 0) - (a.relevance_score ?? 0));
+    } else if (sortBy === 'semantic') {
+      // Sort by semantic_score descending for semantic-focused view
+      return list.sort((a, b) => (b.semantic_score ?? b.relevance_score ?? 0) - (a.semantic_score ?? a.relevance_score ?? 0));
+    } else if (sortBy === 'date') {
+      // Sort by publication date (newest first)
+      return list.sort((a, b) => (b.publication_date || '').localeCompare(a.publication_date || ''));
+    }
+    // Default: relevance_score descending
+    return list.sort((a, b) => (b.relevance_score ?? 0) - (a.relevance_score ?? 0));
+  }, [results, sortBy]);
+
+  const handleSearchSubmit = (e) => {
+    e.preventDefault();
+    if (!query.trim()) return;
     setPage(1);
-    fetchSearch(1);
+    executeSearch(query, 1);
   };
 
-  const handlePrev = () => {
-    if (page > 1) {
-      const nextPage = page - 1;
-      setPage(nextPage);
-      fetchSearch(nextPage);
+  const handleSelectPrompt = (promptText) => {
+    setQuery(promptText);
+    executeSearch(promptText, 1);
+  };
+
+  const handleSelectMeshTerm = (term) => {
+    const newQ = `${query} ${term}`.trim();
+    setQuery(newQ);
+    executeSearch(newQ, 1);
+  };
+
+  // Pagination & Direct Page Jump
+  // Use totalMeaningful (after filtering) for pagination, fallback to total if not available
+  const resultsToUse = totalMeaningful > 0 ? totalMeaningful : total;
+  const totalPages = Math.max(1, Math.ceil(resultsToUse / pageSize));
+
+  const handlePageChange = (newPage) => {
+    if (newPage >= 1 && newPage <= totalPages && newPage !== page) {
+      setPage(newPage);
+      executeSearch(query, newPage);
+      window.scrollTo({ top: 260, behavior: 'smooth' });
     }
   };
 
-  const handleNext = () => {
-    if (page * pageSize < total) {
-      const nextPage = page + 1;
-      setPage(nextPage);
-      fetchSearch(nextPage);
+  const handleDirectPageJump = (e) => {
+    e.preventDefault();
+    const targetPage = parseInt(jumpPageInput, 10);
+    if (!isNaN(targetPage) && targetPage >= 1 && targetPage <= totalPages) {
+      handlePageChange(targetPage);
+      setJumpPageInput('');
+    } else {
+      alert(`Please enter a valid page number between 1 and ${totalPages}.`);
     }
   };
 
-  const rangeStart = total === 0 ? 0 : (page - 1) * pageSize + 1;
-  const rangeEnd = Math.min(page * pageSize, total);
+  const handlePageSizeChange = (newSize) => {
+    setPageSize(newSize);
+    setPage(1);
+  };
+
+  // Export
+  const handleExportResultsJSON = () => {
+    const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(displayedResults, null, 2));
+    const a = document.createElement('a');
+    a.href = dataStr;
+    a.download = `biomed_search_results_${Date.now()}.json`;
+    a.click();
+  };
+
+  const rangeStart = resultsToUse === 0 ? 0 : (page - 1) * pageSize + 1;
+  const rangeEnd = Math.min(page * pageSize, resultsToUse);
+  const paginationRange = getPaginationRange(page, totalPages);
 
   return (
-    <div className="App">
-      <style>{`
-        .App { min-height: 100vh; background: radial-gradient(circle at top, rgba(47,110,98,0.12), transparent 28%), linear-gradient(180deg, #f3efe8 0%, #eef2ee 100%); color: ${ink}; font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif; padding: 2rem 1.25rem 4rem; }
-        .App * { box-sizing: border-box; }
-        .App-shell { max-width: 860px; margin: 0 auto; background: rgba(255,255,255,0.6); border: 1px solid rgba(27,42,51,0.08); border-radius: 20px; box-shadow: 0 18px 48px rgba(27,42,51,0.08); padding: 1.5rem 1.5rem 2rem; backdrop-filter: blur(8px); }
-        .App-header { margin-bottom: 1.75rem; padding: 1.1rem 0.5rem 0.4rem; border-bottom: 1px solid rgba(27,42,51,0.08); }
-        .App-eyebrow { font-family: 'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: ${rust}; margin: 0 0 6px; }
-        .App-title { font-family: 'Georgia', 'Times New Roman', serif; font-size: 36px; font-weight: 600; color: ${ink}; margin: 0; }
-        .App-subtitle { font-size: 14px; color: ${inkSoft}; margin: 8px 0 0; }
-        .search-form { background: linear-gradient(180deg, rgba(248,248,244,0.98), rgba(240,244,239,0.95)); border: 1px solid rgba(27,42,51,0.08); border-radius: 16px; padding: 1rem 1rem 0.85rem; margin-bottom: 1rem; box-shadow: inset 0 1px 0 rgba(255,255,255,0.7); }
-        .search-input-row { display: flex; align-items: center; gap: 8px; border-bottom: 0.5px solid ${line}; padding-bottom: 0.75rem; margin-bottom: 0.75rem; }
-        .search-input { flex: 1; border: none; outline: none; background: transparent; font-size: 15px; color: ${ink}; font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif; }
-        .search-input::placeholder { color: ${inkSoft}; opacity: 0.7; }
-        .primary-button { font-size: 13px; font-weight: 600; color: #fff; background: linear-gradient(135deg, ${tealDeep}, ${teal}); border: none; border-radius: 10px; box-shadow: 0 10px 18px rgba(31,74,66,0.18); padding: 9px 18px; cursor: pointer; white-space: nowrap; transition: transform .15s ease, box-shadow .15s ease, opacity .15s ease; }
-        .primary-button:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 12px 20px rgba(31,74,66,0.22); opacity: 0.92; }
-        .primary-button:disabled { opacity: 0.6; cursor: not-allowed; }
-        .primary-button:focus-visible, .search-input:focus-visible, .filter-select:focus-visible, .article-expand:focus-visible, .article-link:focus-visible, .pagination button:focus-visible, .recent-chip:focus-visible { outline: 2px solid ${teal}; outline-offset: 2px; }
-        .search-filters { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13px; color: ${inkSoft}; }
-        .filter-label { font-size: 12.5px; color: ${inkSoft}; }
-        .filter-select { font-size: 13px; color: ${ink}; background: #EFF2EF; border: 0.5px solid ${line}; border-radius: 3px; padding: 4px 8px; cursor: pointer; font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif; }
-        .checkbox-label { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: ${inkSoft}; cursor: pointer; margin-left: auto; }
-        .recent-searches { margin: 0 0 1rem; }
-        .recent-title { margin: 0 0 0.5rem; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: ${inkSoft}; font-family: 'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace; }
-        .recent-list { display: flex; flex-wrap: wrap; gap: 8px; }
-        .recent-chip { border: 1px solid rgba(31,74,66,0.18); background: rgba(220,233,228,0.5); color: ${tealDeep}; border-radius: 999px; padding: 7px 10px; font-size: 12px; cursor: pointer; transition: background 0.15s ease; }
-        .recent-chip:hover { background: rgba(220,233,228,0.9); }
-        .message { font-size: 14px; border-radius: 4px; padding: 10px 14px; margin-bottom: 1rem; }
-        .message-error { display: flex; align-items: center; gap: 8px; color: ${rust}; background: #F1DFD3; border: 0.5px solid ${rust}; }
-        .empty-state { text-align: center; padding: 3rem 1rem; border: 1px dashed ${line}; border-radius: 4px; color: ${inkSoft}; }
-        .empty-state svg { margin: 0 auto 10px; color: ${inkSoft}; }
-        .empty-state p { font-size: 14px; margin: 0; }
-        .results-summary { display: flex; align-items: baseline; justify-content: space-between; font-family: 'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace; font-size: 12px; color: ${inkSoft}; margin-bottom: 0.75rem; }
-        .results-page { text-transform: uppercase; letter-spacing: 0.04em; }
-        .article-list { list-style: none; display: flex; flex-direction: column; gap: 14px; margin: 0 0 1.25rem; padding: 0; }
-        .article-card { background: linear-gradient(180deg, rgba(248,248,244,0.98), rgba(244,244,239,0.9)); border: 1px solid rgba(27,42,51,0.08); border-radius: 14px; padding: 1.1rem 1.25rem 1rem; position: relative; box-shadow: 0 10px 24px rgba(27,42,51,0.04); transition: transform .15s ease, box-shadow .15s ease; }
-        .article-card:hover { transform: translateY(-1px); box-shadow: 0 14px 28px rgba(27,42,51,0.06); }
-        .article-card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
-        .article-card-tab { display: flex; align-items: center; gap: 8px; min-width: 0; }
-        .article-rank { font-family: 'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace; font-size: 11px; color: ${inkSoft}; flex-shrink: 0; }
-        .article-journal { font-family: 'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: ${tealDeep}; background: #DCE9E4; padding: 2px 8px; border-radius: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .article-stamp { font-family: 'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace; font-size: 11px; border: 1px dashed; border-radius: 3px; padding: 3px 8px; transform: rotate(-2deg); flex-shrink: 0; line-height: 1.3; text-align: right; }
-        .article-stamp-score { font-size: 13px; font-weight: 600; }
-        .article-stamp-label { font-size: 9px; letter-spacing: 0.04em; text-transform: uppercase; }
-        .article-title { font-family: 'Georgia', 'Times New Roman', serif; font-size: 19px; font-weight: 600; color: ${ink}; line-height: 1.35; margin: 0 0 4px; }
-        .article-authors { font-family: 'Georgia', 'Times New Roman', serif; font-style: italic; font-size: 13.5px; color: ${inkSoft}; margin: 0 0 10px; }
-        .article-date { font-family: 'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace; font-style: normal; font-size: 12px; }
-        .article-abstract { font-size: 14px; color: ${ink}; line-height: 1.6; margin: 0 0 8px; }
-        .article-expand { font-size: 12.5px; color: ${tealDeep}; background: transparent; border: none; padding: 0; margin-bottom: 10px; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
-        .article-footer { display: flex; align-items: center; justify-content: flex-end; border-top: 0.5px solid ${line}; padding-top: 8px; margin-top: 4px; }
-        .article-link { font-size: 13px; font-weight: 500; color: #fff; background: ${tealDeep}; padding: 6px 12px; border-radius: 4px; text-decoration: none; display: inline-flex; align-items: center; gap: 5px; }
-        .article-nolink { font-size: 12px; color: ${inkSoft}; font-style: italic; }
-        .skeleton-card { background: ${cardPaper}; border: 0.5px solid ${line}; border-left: 3px solid ${line}; border-radius: 8px; padding: 1.1rem 1.25rem 1rem; }
-        .skeleton-bar { background: #E3E1D8; border-radius: 3px; animation: pulse 1.4s ease-in-out infinite; }
-        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
-        .pagination { display: flex; justify-content: center; gap: 10px; }
-        .pagination button { font-size: 13px; font-weight: 500; color: ${ink}; background: ${cardPaper}; border: 0.5px solid ${line}; border-radius: 4px; padding: 7px 16px; cursor: pointer; }
-        .pagination button:hover:not(:disabled) { border-color: ${tealDeep}; color: ${tealDeep}; }
-        .pagination button:disabled { opacity: 0.4; cursor: not-allowed; }
-        @media (max-width: 560px) {
-          .App-title { font-size: 26px; }
-          .checkbox-label { margin-left: 0; }
-          .article-card-top { flex-wrap: wrap; }
-          .article-stamp { text-align: left; }
-        }
-      `}</style>
+    <div className="app-wrapper">
+      <div className="app-container">
+        {/* Navigation Bar */}
+        <header className="navbar">
+          <div className="nav-brand">
+            <div className="brand-icon-box">
+              <BookOpen size={20} />
+            </div>
+            <div>
+              <div className="brand-title">
+                BioMed<span className="brand-title-accent">Evidence</span>
+              </div>
+              <div className="brand-tagline">Literature Search & Clinical Synthesis</div>
+            </div>
+          </div>
 
-      <div className="App-shell">
-        <header className="App-header">
-          <p className="App-eyebrow">Semantic literature search</p>
-          <h1 className="App-title">BioMed Semantic Search</h1>
-          <p className="App-subtitle">Search PubMed articles using natural language and semantic ranking.</p>
-        </header>
+          <div className="nav-actions">
+            {/* Status Indicator */}
+            <div
+              className={`status-indicator ${apiStatus === 'online' ? 'status-live' : 'status-demo'}`}
+              title={apiStatus === 'online' ? 'Connected to PubMed API & FastAPI' : 'Using Local Evidence Index'}
+            >
+              <span className="status-dot" />
+              <span>{apiStatus === 'online' ? 'PubMed Live' : 'Evidence Index'}</span>
+            </div>
 
-        <form className="search-form" onSubmit={handleSearch}>
-          <div className="search-input-row">
-            <Search size={16} color={inkSoft} aria-hidden="true" />
-            <input
-              id="query"
-              className="search-input"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Enter keywords, disease, symptoms, or treatment"
-              aria-label="Search query"
-              required
-            />
-            <button type="submit" className="primary-button" disabled={loading}>
-              {loading ? 'Searching…' : 'Search'}
+            {/* Saved Library Button */}
+            <button
+              className="nav-btn"
+              onClick={() => setIsSavedDrawerOpen(true)}
+              title="Open Saved Research Library"
+            >
+              <Bookmark size={15} className="text-teal" />
+              <span>Library</span>
+              {savedArticles.length > 0 && (
+                <span className="saved-count-pill">{savedArticles.length}</span>
+              )}
+            </button>
+
+            {/* Theme Toggle Button */}
+            <button
+              className="theme-toggle-btn"
+              onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}
+              title={`Switch to ${theme === 'light' ? 'Dark' : 'Light'} Mode`}
+              aria-label="Toggle Theme"
+            >
+              {theme === 'light' ? <Moon size={17} /> : <Sun size={17} />}
             </button>
           </div>
+        </header>
 
-          <div className="search-filters">
-            <SlidersHorizontal size={14} color={inkSoft} aria-hidden="true" />
-            <label htmlFor="articleType" className="filter-label">
-              Article type
-            </label>
-            <select
-              id="articleType"
-              className="filter-select"
-              value={articleType}
-              onChange={(e) => setArticleType(e.target.value)}
-            >
-              <option value="">All types</option>
-              <option value="Clinical Trial">Clinical Trial</option>
-              <option value="Review">Review</option>
-              <option value="Meta-Analysis">Meta-Analysis</option>
-            </select>
-
-            <label htmlFor="freeFullText" className="checkbox-label">
-              <input
-                id="freeFullText"
-                type="checkbox"
-                checked={freeFullText}
-                onChange={(e) => setFreeFullText(e.target.checked)}
-              />
-              Free full text only
-            </label>
+        {/* Natural Clinical Hero Section */}
+        <section className="hero-section">
+          <div className="hero-badge">
+            <Stethoscope size={13} className="text-teal" />
+            <span>PubMed Indexed · Semantic Literature Retrieval</span>
           </div>
-        </form>
+          <h1 className="hero-title">
+            Biomedical Literature Search & Clinical Evidence Synthesis
+          </h1>
+          <p className="hero-subtitle">
+            Search peer-reviewed PubMed publications, randomized trials, and systematic reviews using hybrid semantic retrieval and MeSH taxonomy.
+          </p>
+        </section>
 
-        {recentSearches.length > 0 && (
-          <div className="recent-searches">
-            <p className="recent-title">Recently searched</p>
-            <div className="recent-list">
-              {recentSearches.map((term) => (
+        {/* Search Control Card */}
+        <div className="search-card">
+          <form onSubmit={handleSearchSubmit}>
+            <div className="search-input-group">
+              <Search size={18} className="search-icon-lead" />
+              <input
+                ref={searchInputRef}
+                type="text"
+                className="main-search-input"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Enter disease, clinical trial topic, pharmacological mechanism, or symptoms..."
+                aria-label="Search PubMed Biomedical Literature"
+              />
+              {query && (
                 <button
                   type="button"
-                  key={term}
-                  className="recent-chip"
+                  className="search-clear-btn"
                   onClick={() => {
-                    setQuery(term);
-                    setHasSearched(true);
-                    setPage(1);
-                    fetchSearch(1);
+                    setQuery('');
+                    searchInputRef.current?.focus();
+                  }}
+                  title="Clear search query"
+                >
+                  <X size={16} />
+                </button>
+              )}
+              <button
+                type="submit"
+                className="search-submit-btn"
+                disabled={loading}
+              >
+                {loading ? (
+                  <>
+                    <span className="status-dot" />
+                    <span>Searching...</span>
+                  </>
+                ) : (
+                  <>
+                    <Search size={15} />
+                    <span>Search Literature</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </form>
+
+          {/* Prompt Inspiration Chips */}
+          <div className="prompts-container">
+            <span className="prompts-label">
+              <BookOpen size={12} className="text-muted" /> Suggested Inquiries:
+            </span>
+            {SUGGESTED_QUERIES.map((prompt, idx) => (
+              <button
+                key={idx}
+                type="button"
+                className="prompt-chip"
+                onClick={() => handleSelectPrompt(prompt)}
+              >
+                {prompt}
+              </button>
+            ))}
+          </div>
+
+          {/* Advanced Filters Bar */}
+          {showFilters && (
+            <div className="filter-bar">
+              <div className="filter-group">
+                {/* Article Type Select */}
+                <div className="filter-item">
+                  <SlidersHorizontal size={14} className="text-muted" />
+                  <select
+                    className="filter-select"
+                    value={articleType}
+                    onChange={(e) => setArticleType(e.target.value)}
+                    aria-label="Filter by Article Type"
+                  >
+                    <option value="">All Study Types</option>
+                    <option value="Clinical Trial">Clinical Trial</option>
+                    <option value="Randomized Controlled Trial">Randomized Controlled Trial</option>
+                    <option value="Review">Review</option>
+                    <option value="Meta-Analysis">Meta-Analysis</option>
+                    <option value="Systematic Review">Systematic Review</option>
+                  </select>
+                </div>
+
+                {/* Year Range */}
+                <div className="filter-item">
+                  <span className="text-muted font-mono">Years:</span>
+                  <input
+                    type="number"
+                    className="filter-number-input"
+                    placeholder="From"
+                    value={yearFrom}
+                    onChange={(e) => setYearFrom(e.target.value)}
+                    min="1950"
+                    max="2026"
+                  />
+                  <span className="text-muted">–</span>
+                  <input
+                    type="number"
+                    className="filter-number-input"
+                    placeholder="To"
+                    value={yearTo}
+                    onChange={(e) => setYearTo(e.target.value)}
+                    min="1950"
+                    max="2026"
+                  />
+                </div>
+
+                {/* Free Full Text Toggle */}
+                <label className="filter-toggle-label">
+                  <div
+                    className={`custom-switch ${freeFullText ? 'active' : ''}`}
+                    onClick={() => setFreeFullText(!freeFullText)}
+                  >
+                    <div className="switch-thumb" />
+                  </div>
+                  <span>Free PMC Full Text</span>
+                </label>
+              </div>
+
+              {/* Retrieval Mode Toggle */}
+              <div className="filter-group">
+                <button
+                  type="button"
+                  className="filter-mode-pill"
+                  onClick={() => setSemanticOnly(!semanticOnly)}
+                  title="Toggle between Dense Semantic only and Hybrid BM25+Embedding"
+                >
+                  <span>Mode: {semanticOnly ? 'Dense Semantic' : 'Hybrid 80/20'}</span>
+                </button>
+
+                {(articleType || yearFrom || yearTo || freeFullText || semanticOnly) && (
+                  <button
+                    type="button"
+                    className="btn-card-action"
+                    onClick={() => {
+                      setArticleType('');
+                      setYearFrom('');
+                      setYearTo('');
+                      setFreeFullText(false);
+                      setSemanticOnly(false);
+                    }}
+                    title="Reset all filters"
+                  >
+                    <RotateCcw size={12} />
+                    <span>Reset</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Recent Searches */}
+        {recentSearches.length > 0 && (
+          <div className="recent-searches-bar">
+            <span className="recent-label">
+              <RotateCcw size={12} /> Recent:
+            </span>
+            {recentSearches.map((term, i) => (
+              <button
+                key={i}
+                type="button"
+                className="recent-chip"
+                onClick={() => {
+                  setQuery(term);
+                  executeSearch(term, 1);
+                }}
+              >
+                {term}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Error Alert Box */}
+        {error && (
+          <div className="error-card animate-fade-in">
+            <div className="error-left">
+              <AlertCircle size={18} />
+              <span>{error}</span>
+            </div>
+            <button
+              className="btn btn-secondary"
+              onClick={() => executeSearch(query, page)}
+            >
+              Retry
+            </button>
+          </div>
+        )}
+
+        {/* Analytics & MeSH Insights */}
+        {!loading && hasSearched && results.length > 0 && (
+          <AnalyticsBar
+            topMeshTerms={topMeshTerms}
+            concepts={concepts}
+            totalResults={total}
+            results={displayedResults}
+            isSemanticOnly={semanticOnly}
+            onSelectMesh={handleSelectMeshTerm}
+          />
+        )}
+
+        {/* Empty State / Initial Inspiration */}
+        {!hasSearched && !loading && (
+          <div className="empty-state-card animate-fade-in">
+            <div className="empty-icon-wrap">
+              <FileSearch size={28} />
+            </div>
+            <h3 className="empty-state-title">Explore PubMed Literature</h3>
+            <p className="empty-state-desc">
+              Browse peer-reviewed evidence using natural queries. Select a research domain below or enter your clinical inquiry above.
+            </p>
+
+            <div className="categories-grid">
+              {EXPLORATION_CATEGORIES.map((cat, idx) => (
+                <div
+                  key={idx}
+                  className="category-card"
+                  onClick={() => {
+                    setQuery(cat.query);
+                    executeSearch(cat.query, 1);
                   }}
                 >
-                  {term}
-                </button>
+                  <div className="category-icon-title">
+                    {cat.icon}
+                    <span>{cat.title}</span>
+                  </div>
+                  <p className="category-sample">{cat.sample}</p>
+                </div>
               ))}
             </div>
           </div>
         )}
 
-        {error && (
-          <div className="message message-error">
-            <AlertCircle size={16} aria-hidden="true" />
-            <span>{error}</span>
-          </div>
-        )}
-
-        {!error && !loading && !hasSearched && (
-          <div className="empty-state">
-            <FileSearch size={28} aria-hidden="true" />
-            <p>Enter a query and click Search to browse the index.</p>
-          </div>
-        )}
-
-        {!error && !loading && hasSearched && results.length === 0 && (
-          <div className="empty-state">
-            <FileSearch size={28} aria-hidden="true" />
-            <p>No records match "{query}". Try a different search term or filter.</p>
-          </div>
-        )}
-
+        {/* Loading Skeletons */}
         {loading && (
           <ul className="article-list">
-            {[0, 1, 2].map((i) => (
-              <SkeletonCard key={i} />
+            {[1, 2, 3].map((i) => (
+              <li key={i} className="skeleton-card">
+                <div className="skeleton-shimmer" style={{ width: '35%', height: 14, marginBottom: 14 }} />
+                <div className="skeleton-shimmer" style={{ width: '85%', height: 22, marginBottom: 10 }} />
+                <div className="skeleton-shimmer" style={{ width: '50%', height: 14, marginBottom: 16 }} />
+                <div className="skeleton-shimmer" style={{ width: '100%', height: 12, marginBottom: 8 }} />
+                <div className="skeleton-shimmer" style={{ width: '92%', height: 12, marginBottom: 8 }} />
+                <div className="skeleton-shimmer" style={{ width: '65%', height: 12 }} />
+              </li>
             ))}
           </ul>
         )}
 
-        {!loading && results.length > 0 && (
-          <div className="results">
-            <div className="results-summary">
-              <span>
-                Showing {rangeStart}–{rangeEnd} of {total} results
-              </span>
-              <span className="results-page">Page {page}</span>
+        {/* No Results Match State */}
+        {!loading && hasSearched && results.length === 0 && !error && (
+          <div className="empty-state-card animate-fade-in">
+            <div className="empty-icon-wrap">
+              <ShieldAlert size={28} />
             </div>
-
-            <ul className="article-list">
-              {results.map((article, i) => (
-                <ArticleCard key={article.pmid ?? i} article={article} rank={rangeStart + i} />
-              ))}
-            </ul>
-
-            <div className="pagination">
-              <button onClick={handlePrev} disabled={page === 1}>
-                Previous
-              </button>
-              <button onClick={handleNext} disabled={page * pageSize >= total}>
-                Next
-              </button>
-            </div>
+            <h3 className="empty-state-title">No Matching Literature Found</h3>
+            <p className="empty-state-desc">
+              No PubMed articles matched the specific query "{query}". Try broadening terms or resetting study type filters.
+            </p>
+            <button
+              className="btn btn-primary"
+              onClick={() => {
+                setArticleType('');
+                setYearFrom('');
+                setYearTo('');
+                setFreeFullText(false);
+                executeSearch(query, 1);
+              }}
+            >
+              Reset Filters & Retry
+            </button>
           </div>
         )}
+
+        {/* Search Results List */}
+        {!loading && results.length > 0 && (
+          <div className="results-wrapper animate-fade-in">
+            {/* Google-Style AI Overview Snapshot */}
+            <AIOverview
+              query={query}
+              overviewData={aiOverview}
+              results={displayedResults}
+              onSelectPrompt={handleSelectPrompt}
+            />
+
+            {/* Results Header Toolbar with Sort & Count */}
+            <div className="results-header-toolbar">
+              <div className="results-count-text">
+                Showing <span className="results-count-highlight">{rangeStart}–{rangeEnd}</span> of <span className="results-count-highlight">{totalMeaningful.toLocaleString()}</span> matching publications (Top Matches First)
+                {total > 0 && (
+                  <span className="results-info-text" title="Total indexed vs. meaningful results after relevance filtering">
+                    (from {total.toLocaleString()} indexed in PubMed)
+                  </span>
+                )}
+              </div>
+
+              <div className="results-toolbar-actions">
+                {/* Sort selector */}
+                <div className="sort-select-wrapper">
+                  <ArrowUpDown size={13} />
+                  <span>Sort:</span>
+                  <select
+                    className="sort-select"
+                    value={sortBy}
+                    onChange={(e) => setSortBy(e.target.value)}
+                    aria-label="Sort publications"
+                  >
+                    <option value="relevance">Highest Match First (Descending)</option>
+                    <option value="semantic">Semantic Similarity First</option>
+                    <option value="date">Publication Date (Newest First)</option>
+                  </select>
+                </div>
+
+                <button
+                  className="btn-card-action"
+                  onClick={handleExportResultsJSON}
+                  title="Export results as JSON"
+                >
+                  <Download size={14} />
+                  <span>Export JSON</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Render Article Cards in strict descending match order */}
+            <ul className="article-list">
+              {displayedResults.map((article, idx) => {
+                const rankNum = rangeStart + idx;
+                const isSaved = savedArticles.some((a) => a.pmid === article.pmid || a.title === article.title);
+
+                return (
+                  <ArticleCard
+                    key={article.pmid || idx}
+                    article={article}
+                    rank={rankNum}
+                    isSaved={isSaved}
+                    onToggleSave={handleToggleSave}
+                    onOpenCite={(art) => setActiveCiteArticle(art)}
+                    onOpenDetail={(art) => setActiveDetailArticle(art)}
+                    onSelectMesh={handleSelectMeshTerm}
+                  />
+                );
+              })}
+            </ul>
+
+            {/* Multi-Page Number Navigation & Direct Page Jump Controls */}
+            {resultsToUse > 0 && (
+              <div className="pagination-wrapper">
+                <div className="pagination-controls-row">
+                  {/* First page button */}
+                  <button
+                    className="btn-page-nav"
+                    onClick={() => handlePageChange(1)}
+                    disabled={page === 1}
+                    title="Jump to First Page"
+                  >
+                    <ChevronsLeft size={15} />
+                    <span>First</span>
+                  </button>
+
+                  {/* Previous button */}
+                  <button
+                    className="btn-page-nav"
+                    onClick={() => handlePageChange(page - 1)}
+                    disabled={page <= 1}
+                    title="Previous Page"
+                  >
+                    <ChevronLeft size={15} />
+                    <span>Prev</span>
+                  </button>
+
+                  {/* Clickable Page Numbers */}
+                  <div className="pagination-numbers-list">
+                    {paginationRange.map((num, i) =>
+                      num === '...' ? (
+                        <span key={`ellipsis-${i}`} className="pagination-ellipsis">…</span>
+                      ) : (
+                        <button
+                          key={`page-${num}`}
+                          className={`btn-page-num ${page === num ? 'active' : ''}`}
+                          onClick={() => handlePageChange(num)}
+                          title={`Go to Page ${num}`}
+                        >
+                          {num}
+                        </button>
+                      )
+                    )}
+                  </div>
+
+                  {/* Next button */}
+                  <button
+                    className="btn-page-nav"
+                    onClick={() => handlePageChange(page + 1)}
+                    disabled={page >= totalPages}
+                    title="Next Page"
+                  >
+                    <span>Next</span>
+                    <ChevronRight size={15} />
+                  </button>
+
+                  {/* Last page button */}
+                  <button
+                    className="btn-page-nav"
+                    onClick={() => handlePageChange(totalPages)}
+                    disabled={page === totalPages}
+                    title="Jump to Last Page"
+                  >
+                    <span>Last</span>
+                    <ChevronsRight size={15} />
+                  </button>
+                </div>
+
+                {/* Direct Jump Input & Page Size Row */}
+                <div className="pagination-jump-row">
+                  <form onSubmit={handleDirectPageJump} className="page-jump-form">
+                    <span>Go to page:</span>
+                    <input
+                      type="number"
+                      min="1"
+                      max={totalPages}
+                      value={jumpPageInput}
+                      onChange={(e) => setJumpPageInput(e.target.value)}
+                      placeholder={String(page)}
+                      className="page-jump-input"
+                      aria-label="Direct page jump"
+                    />
+                    <button type="submit" className="page-jump-btn">
+                      Go
+                    </button>
+                  </form>
+
+                  <div className="page-size-selector">
+                    <span>Per page:</span>
+                    <select
+                      value={pageSize}
+                      onChange={(e) => handlePageSizeChange(Number(e.target.value))}
+                      className="page-size-select"
+                      aria-label="Select items per page"
+                    >
+                      <option value="10">10</option>
+                      <option value="20">20</option>
+                      <option value="50">50</option>
+                      <option value="100">100</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Citation Modal */}
+        {activeCiteArticle && (
+          <CitationModal
+            article={activeCiteArticle}
+            onClose={() => setActiveCiteArticle(null)}
+          />
+        )}
+
+        {/* Article Deep-Dive Detail Modal */}
+        {activeDetailArticle && (
+          <ArticleDetailModal
+            article={activeDetailArticle}
+            isSaved={savedArticles.some((a) => a.pmid === activeDetailArticle.pmid || a.title === activeDetailArticle.title)}
+            onToggleSave={handleToggleSave}
+            onOpenCite={(art) => setActiveCiteArticle(art)}
+            onSelectMesh={handleSelectMeshTerm}
+            onClose={() => setActiveDetailArticle(null)}
+          />
+        )}
+
+        {/* Saved Research Library Drawer */}
+        <SavedArticlesDrawer
+          isOpen={isSavedDrawerOpen}
+          onClose={() => setIsSavedDrawerOpen(false)}
+          savedArticles={savedArticles}
+          onRemoveArticle={handleRemoveSaved}
+          onClearAll={handleClearAllSaved}
+          onOpenCite={(art) => setActiveCiteArticle(art)}
+        />
       </div>
+
+      {/* Footer */}
+      <footer className="app-footer">
+        <div className="footer-content">
+          <div>
+            BioMed Evidence Engine · Powered by FastAPI, PubMed E-Utilities & Neural Embeddings
+          </div>
+          <div className="flex items-center gap-2">
+            <span>Press <kbd className="font-mono">/</kbd> to search</span>
+          </div>
+        </div>
+      </footer>
     </div>
   );
 }

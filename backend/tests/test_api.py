@@ -118,6 +118,73 @@ def test_pubmed_esearch_uses_requested_page_and_limit(monkeypatch):
     assert captured["params"]["retmax"] == 10
 
 
+def test_search_uses_full_rerank_pool_before_pagination(monkeypatch):
+    import numpy as np
+    from app.api import routes
+    from app.config import RE_RANK_TOP_K
+
+    calls = {}
+
+    def fake_search_ids(term, page=1, limit=10):
+        calls["search_ids"] = {"term": term, "page": page, "limit": limit}
+        return {"count": 12, "ids": [str(i) for i in range(1, 12)]}
+
+    monkeypatch.setattr(routes.pubmed_service, "search_ids", fake_search_ids)
+    monkeypatch.setattr(routes.pubmed_service, "fetch_articles", lambda ids: [{"pmid": str(i), "title": f"Paper {i}", "abstract": "x", "authors": [], "journal": "J", "mesh_terms": [], "publication_date": "2024", "article_type": "Review", "doi": ""} for i in ids])
+    monkeypatch.setattr(routes.embedding_service, "get_query_embedding", lambda query: np.zeros(3))
+    monkeypatch.setattr(routes.embedding_service, "get_article_embeddings", lambda articles: np.zeros((len(articles), 3)))
+    monkeypatch.setattr(routes.ranking_service, "score_articles", lambda *args, **kwargs: [
+        {**article, "semantic_score": 0.9, "keyword_score": 0.1, "relevance_score": 0.9}
+        for article in args[2]
+    ])
+
+    response = routes.search_pubmed(
+        query="diabetes",
+        year_from=None,
+        year_to=None,
+        article_types=None,
+        free_full_text=False,
+        limit=10,
+        page=1,
+        semantic_only=False,
+    )
+
+    assert calls["search_ids"]["page"] == 1
+    assert calls["search_ids"]["limit"] == RE_RANK_TOP_K
+    assert response["page"] == 1
+    assert response["limit"] == 10
+    assert len(response["results"]) == 10
+
+
+def test_fetch_articles_batches_large_id_list(monkeypatch):
+    import httpx
+    from app.services.pubmed_service import PubMedService
+
+    calls = []
+
+    class FakeResponse:
+        def __init__(self, text: str):
+            self.text = text
+
+        def raise_for_status(self):
+            return None
+
+    def fake_get(self, url, params=None, **kwargs):
+        calls.append(params["id"].split(","))
+        return FakeResponse("<PubmedArticleSet></PubmedArticleSet>")
+
+    monkeypatch.setattr(httpx.Client, "get", fake_get)
+    service = PubMedService()
+    ids = [str(i) for i in range(1, 401)]
+
+    articles = service.fetch_articles(ids, batch_size=200)
+
+    assert len(calls) == 2
+    assert len(calls[0]) == 200
+    assert len(calls[1]) == 200
+    assert articles == []
+
+
 def test_search_invalid_year_filter():
     response = client.get("/api/search", params={"query": "cancer", "year_from": "abcd"})
     assert response.status_code == 422
