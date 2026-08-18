@@ -4,10 +4,14 @@ from typing import List, Optional
 import httpx
 
 from app.config import DEFAULT_LIMIT, DEFAULT_PAGE, MAX_LIMIT, RE_RANK_TOP_K, USE_HYBRID_RETRIEVAL, MIN_RELEVANCE_THRESHOLD
-from app.models.schemas import ErrorResponse, SearchResponse
+from app.models.schemas import (
+    ErrorResponse, SearchResponse, AnalyticsVisitRequest, AnalyticsSearchRequest,
+    AnalyticsResponse, AnalyticsStatsResponse
+)
 from app.services.embedding_service import EmbeddingService
 from app.services.pubmed_service import PubMedService
 from app.services.ranking_service import RankingService
+from app.services.analytics_service import AnalyticsService
 from app.utils.helpers import build_pubmed_term, extract_concepts, preprocess_query, truncate_text
 import logging
 
@@ -18,11 +22,303 @@ router = APIRouter(prefix="/api")
 pubmed_service = PubMedService()
 embedding_service = EmbeddingService()
 ranking_service = RankingService()
+analytics_service = AnalyticsService()
 
 
 @router.get("/health", summary="Health check", response_model=dict)
 def health_check() -> dict:
     return {"status": "ok", "service": "BioMed Semantic Search Backend"}
+
+
+# ============================================================================
+# ANALYTICS ENDPOINTS - Anonymous Usage Tracking (Non-blocking)
+# ============================================================================
+
+@router.post("/analytics/visit", summary="Record anonymous visitor session", response_model=AnalyticsResponse)
+def analytics_visit(request: AnalyticsVisitRequest) -> AnalyticsResponse:
+    """Record an anonymous visitor session.
+    
+    This endpoint tracks when a user opens the website. The visitor is identified
+    by an anonymous ID (UUID) stored in browser localStorage.
+    
+    Important: This endpoint never blocks the frontend. Failures are logged but not returned.
+    """
+    try:
+        success = analytics_service.record_visit(request.visitor_id)
+        if success:
+            return AnalyticsResponse(success=True, message="Visit recorded")
+        else:
+            logger.warning(f"Failed to record visit for visitor {request.visitor_id}")
+            return AnalyticsResponse(success=False, message="Visit not recorded")
+    except Exception as e:
+        logger.error(f"Error in /analytics/visit endpoint: {e}")
+        # Return success=False but still 200 OK so frontend doesn't worry
+        return AnalyticsResponse(success=False, message="Recording service temporarily unavailable")
+
+
+@router.post("/analytics/search", summary="Record anonymous search event", response_model=AnalyticsResponse)
+def analytics_search(request: AnalyticsSearchRequest) -> AnalyticsResponse:
+    """Record an anonymous search event.
+    
+    This endpoint tracks when a user performs a PubMed search. Records:
+    - Anonymous visitor ID
+    - Search query (truncated to 500 chars)
+    - Number of results returned to user
+    - Total results in PubMed index
+    - Search mode (hybrid or semantic_only)
+    
+    Important: This endpoint never blocks the frontend. Failures are logged but not returned.
+    """
+    try:
+        success = analytics_service.record_search(
+            request.visitor_id,
+            request.search_query,
+            request.result_count,
+            request.total_results,
+            request.search_mode
+        )
+        if success:
+            return AnalyticsResponse(success=True, message="Search recorded")
+        else:
+            logger.warning(f"Failed to record search for visitor {request.visitor_id}")
+            return AnalyticsResponse(success=False, message="Search not recorded")
+    except Exception as e:
+        logger.error(f"Error in /analytics/search endpoint: {e}")
+        # Return success=False but still 200 OK so frontend doesn't worry
+        return AnalyticsResponse(success=False, message="Recording service temporarily unavailable")
+
+
+@router.get("/analytics/stats", summary="Get analytics statistics", response_model=AnalyticsStatsResponse)
+def analytics_stats() -> AnalyticsStatsResponse:
+    """Get current analytics statistics.
+    
+    Returns aggregated, anonymous statistics:
+    - Total and recent unique visitors
+    - Total and recent search counts
+    - Number of returning visitors
+    - Recent search queries
+    
+    This endpoint is public and does not require authentication.
+    """
+    try:
+        stats = analytics_service.get_statistics()
+        
+        # Ensure all required fields are present with safe defaults
+        return AnalyticsStatsResponse(
+            total_unique_visitors=stats.get("total_unique_visitors", 0),
+            today_unique_visitors=stats.get("today_unique_visitors", 0),
+            week_unique_visitors=stats.get("week_unique_visitors", 0),
+            total_searches=stats.get("total_searches", 0),
+            today_searches=stats.get("today_searches", 0),
+            week_searches=stats.get("week_searches", 0),
+            returning_visitors=stats.get("returning_visitors", 0),
+            recent_searches=stats.get("recent_searches", []),
+            timestamp=stats.get("timestamp", "")
+        )
+    except Exception as e:
+        logger.error(f"Error in /analytics/stats endpoint: {e}")
+        return AnalyticsStatsResponse(
+            total_unique_visitors=0,
+            today_unique_visitors=0,
+            week_unique_visitors=0,
+            total_searches=0,
+            today_searches=0,
+            week_searches=0,
+            returning_visitors=0,
+            recent_searches=[],
+            timestamp=""
+        )
+
+
+@router.get("/analytics/visitors", summary="Get all visitors in table format")
+def analytics_visitors() -> dict:
+    """Get all visitors with their activity details.
+    
+    Returns paginated visitor data including:
+    - Visitor ID
+    - First visit date
+    - Last visit date
+    - Visit count
+    - Total searches by that visitor
+    """
+    try:
+        db = analytics_service.db
+        with db.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Get visitor details with search counts
+            cursor.execute("""
+                SELECT 
+                    v.visitor_id,
+                    v.first_visit_at,
+                    v.last_visit_at,
+                    v.visit_count,
+                    COUNT(DISTINCT s.id) as total_searches
+                FROM visits v
+                LEFT JOIN searches s ON v.visitor_id = s.visitor_id
+                GROUP BY v.visitor_id
+                ORDER BY v.last_visit_at DESC
+            """)
+            
+            rows = cursor.fetchall()
+            visitors = []
+            for row in rows:
+                visitors.append({
+                    "visitor_id": row["visitor_id"],
+                    "first_visit": row["first_visit_at"],
+                    "last_visit": row["last_visit_at"],
+                    "visit_count": row["visit_count"],
+                    "total_searches": row["total_searches"]
+                })
+            
+            return {
+                "success": True,
+                "count": len(visitors),
+                "visitors": visitors
+            }
+    except Exception as e:
+        logger.error(f"Error in /analytics/visitors endpoint: {e}")
+        return {
+            "success": False,
+            "count": 0,
+            "visitors": [],
+            "error": str(e)
+        }
+
+
+@router.get("/analytics/searches", summary="Get all searches in table format")
+def analytics_searches(limit: int = Query(100, ge=1, le=1000), days: int = Query(7, ge=1)) -> dict:
+    """Get recent searches in table format.
+    
+    Args:
+        limit: Maximum number of searches to return (default 100)
+        days: Only include searches from last N days (default 7)
+    
+    Returns:
+        List of searches with visitor info and timestamps
+    """
+    try:
+        db = analytics_service.db
+        with db.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            from datetime import datetime, timedelta
+            cutoff = datetime.now() - timedelta(days=days)
+            
+            cursor.execute("""
+                SELECT 
+                    s.id,
+                    s.visitor_id,
+                    s.search_query,
+                    s.result_count,
+                    s.total_results,
+                    s.search_mode,
+                    s.timestamp
+                FROM searches s
+                WHERE s.timestamp >= ?
+                ORDER BY s.timestamp DESC
+                LIMIT ?
+            """, (cutoff, limit))
+            
+            rows = cursor.fetchall()
+            searches = []
+            for row in rows:
+                searches.append({
+                    "id": row["id"],
+                    "visitor_id": row["visitor_id"],
+                    "search_query": row["search_query"],
+                    "result_count": row["result_count"],
+                    "total_results": row["total_results"],
+                    "search_mode": row["search_mode"],
+                    "timestamp": row["timestamp"]
+                })
+            
+            return {
+                "success": True,
+                "count": len(searches),
+                "limit_days": days,
+                "searches": searches
+            }
+    except Exception as e:
+        logger.error(f"Error in /analytics/searches endpoint: {e}")
+        return {
+            "success": False,
+            "count": 0,
+            "searches": [],
+            "error": str(e)
+        }
+
+
+@router.get("/analytics/visitor/{visitor_id}", summary="Get details for specific visitor")
+def analytics_visitor_details(visitor_id: str) -> dict:
+    """Get all details for a specific visitor.
+    
+    Args:
+        visitor_id: The visitor ID to get details for
+    
+    Returns:
+        Visitor visit history and all their searches
+    """
+    try:
+        db = analytics_service.db
+        with db.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Get visitor visit info
+            cursor.execute("""
+                SELECT * FROM visits WHERE visitor_id = ?
+            """, (visitor_id,))
+            visit_row = cursor.fetchone()
+            
+            if not visit_row:
+                return {
+                    "success": False,
+                    "error": f"Visitor {visitor_id} not found"
+                }
+            
+            # Get all searches by this visitor
+            cursor.execute("""
+                SELECT 
+                    id,
+                    search_query,
+                    result_count,
+                    total_results,
+                    search_mode,
+                    timestamp
+                FROM searches
+                WHERE visitor_id = ?
+                ORDER BY timestamp DESC
+            """, (visitor_id,))
+            
+            searches = []
+            for row in cursor.fetchall():
+                searches.append({
+                    "id": row["id"],
+                    "search_query": row["search_query"],
+                    "result_count": row["result_count"],
+                    "total_results": row["total_results"],
+                    "search_mode": row["search_mode"],
+                    "timestamp": row["timestamp"]
+                })
+            
+            return {
+                "success": True,
+                "visitor": {
+                    "visitor_id": visit_row["visitor_id"],
+                    "first_visit": visit_row["first_visit_at"],
+                    "last_visit": visit_row["last_visit_at"],
+                    "visit_count": visit_row["visit_count"],
+                    "total_searches": len(searches)
+                },
+                "searches": searches
+            }
+    except Exception as e:
+        logger.error(f"Error in /analytics/visitor endpoint: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
 
 
 @router.get("/search", summary="Search PubMed articles", response_model=SearchResponse, responses={400: {"model": ErrorResponse}, 503: {"model": ErrorResponse}})
@@ -35,6 +331,7 @@ def search_pubmed(
     limit: Optional[int] = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT, description="Maximum number of articles returned."),
     page: Optional[int] = Query(DEFAULT_PAGE, ge=1, description="Page number for pagination."),
     semantic_only: Optional[bool] = Query(False, description="If true, rank results by semantic similarity only."),
+    visitor_id: Optional[str] = Query(None, description="Anonymous visitor ID for analytics tracking (optional)"),
 ):
     cleaned_query = preprocess_query(query)
     if not cleaned_query:
@@ -156,5 +453,20 @@ def search_pubmed(
         "concepts": extract_concepts(cleaned_query),
         "results": results,
     }
+
+    # Record search event in analytics (non-blocking, fire-and-forget)
+    # This ensures analytics failure never breaks the search functionality
+    if visitor_id:
+        try:
+            analytics_service.record_search(
+                visitor_id=visitor_id,
+                search_query=cleaned_query,
+                result_count=len(results),  # Results returned on current page
+                total_results=total_results,  # Total in PubMed index
+                search_mode="semantic_only" if semantic_only else "hybrid"
+            )
+        except Exception as e:
+            logger.error(f"Failed to record analytics for visitor {visitor_id}: {e}")
+            # Do NOT propagate the error - search succeeded, analytics failed is acceptable
 
     return response

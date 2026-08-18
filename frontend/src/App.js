@@ -6,6 +6,7 @@ import ArticleDetailModal from './components/ArticleDetailModal';
 import SavedArticlesDrawer from './components/SavedArticlesDrawer';
 import AnalyticsBar from './components/AnalyticsBar';
 import AIOverview from './components/AIOverview';
+import { getOrCreateVisitorId, recordVisit, recordSearch } from './utils/analytics';
 import {
   Search,
   SlidersHorizontal,
@@ -176,6 +177,9 @@ function getPaginationRange(currentPage, totalPages) {
 }
 
 export default function App() {
+  // Anonymous Visitor Tracking
+  const [visitorId] = useState(() => getOrCreateVisitorId());
+
   // Theme state
   const [theme, setTheme] = useState(() => {
     return localStorage.getItem('biomed_theme') || 'light';
@@ -255,6 +259,11 @@ export default function App() {
     checkHealth();
   }, []);
 
+  // Record Anonymous Visit on Mount (non-blocking)
+  useEffect(() => {
+    recordVisit(visitorId, API_URL);
+  }, [visitorId]);
+
   // Keyboard Shortcuts ('/' to focus search, 'Esc' to close modals)
   useEffect(() => {
     const handleKeyDown = (e) => {
@@ -331,6 +340,7 @@ export default function App() {
     if (yearTo) params.append('year_to', String(yearTo));
     if (freeFullText) params.append('free_full_text', 'true');
     if (semanticOnly) params.append('semantic_only', 'true');
+    if (visitorId) params.append('visitor_id', visitorId);
 
     try {
       const response = await fetch(`${API_URL}?${params.toString()}`);
@@ -350,6 +360,16 @@ export default function App() {
       setTotalMeaningful(data.total_meaningful_results || 0);  // Results after filtering by relevance
       setPage(data.page || pageNumber);
       setApiStatus('online');
+
+      // Record search analytics (non-blocking, fire-and-forget)
+      recordSearch({
+        visitorId,
+        query: cleanQuery,
+        resultCount: fetchedResults.length,
+        totalResults: data.total_results || 0,
+        searchMode: semanticOnly ? 'semantic_only' : 'hybrid',
+        apiUrl: API_URL
+      });
     } catch (err) {
       console.warn('Live backend unavailable, utilizing client-side semantic index fallback:', err.message);
       setApiStatus('offline');
@@ -395,7 +415,7 @@ export default function App() {
       setLoading(false);
       setHasSearched(true);
     }
-  }, [articleType, yearFrom, yearTo, freeFullText, semanticOnly, pageSize]);
+  }, [articleType, yearFrom, yearTo, freeFullText, semanticOnly, pageSize, visitorId]);
 
   // Sort displayed results descending according to chosen sort criteria
   // NOTE: Backend already returns results sorted by relevance_score descending.
