@@ -1,23 +1,47 @@
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import JSONResponse
-from typing import List, Optional
+from typing import Optional
 import httpx
+import logging
+from datetime import datetime, timedelta
 
-from app.config import DEFAULT_LIMIT, DEFAULT_PAGE, MAX_LIMIT, RE_RANK_TOP_K, USE_HYBRID_RETRIEVAL, MIN_RELEVANCE_THRESHOLD
-from app.models.schemas import (
-    ErrorResponse, SearchResponse, AnalyticsVisitRequest, AnalyticsSearchRequest,
-    AnalyticsResponse, AnalyticsStatsResponse
+from app.config import (
+    DEFAULT_LIMIT,
+    DEFAULT_PAGE,
+    MAX_LIMIT,
+    RE_RANK_TOP_K,
+    MIN_RELEVANCE_THRESHOLD,
 )
+
+from app.models.schemas import (
+    ErrorResponse,
+    SearchResponse,
+    AnalyticsVisitRequest,
+    AnalyticsSearchRequest,
+    AnalyticsResponse,
+    AnalyticsStatsResponse,
+)
+
 from app.services.embedding_service import EmbeddingService
 from app.services.pubmed_service import PubMedService
 from app.services.ranking_service import RankingService
 from app.services.analytics_service import AnalyticsService
-from app.utils.helpers import build_pubmed_term, extract_concepts, preprocess_query, truncate_text
-import logging
+
+from app.utils.helpers import (
+    build_pubmed_term,
+    extract_concepts,
+    preprocess_query,
+    truncate_text,
+)
+
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api")
+
+
+# ============================================================================
+# SERVICES
+# ============================================================================
 
 pubmed_service = PubMedService()
 embedding_service = EmbeddingService()
@@ -25,51 +49,104 @@ ranking_service = RankingService()
 analytics_service = AnalyticsService()
 
 
-@router.get("/health", summary="Health check", response_model=dict)
+# ============================================================================
+# HEALTH CHECK
+# ============================================================================
+
+@router.get(
+    "/health",
+    summary="Health check",
+    response_model=dict
+)
 def health_check() -> dict:
-    return {"status": "ok", "service": "BioMed Semantic Search Backend"}
+    return {
+        "status": "ok",
+        "service": "BioMed Semantic Search Backend"
+    }
 
 
 # ============================================================================
-# ANALYTICS ENDPOINTS - Anonymous Usage Tracking (Non-blocking)
+# ANALYTICS ENDPOINTS
+# Anonymous Usage Tracking
 # ============================================================================
 
-@router.post("/analytics/visit", summary="Record anonymous visitor session", response_model=AnalyticsResponse)
-def analytics_visit(request: AnalyticsVisitRequest) -> AnalyticsResponse:
-    """Record an anonymous visitor session.
-    
-    This endpoint tracks when a user opens the website. The visitor is identified
-    by an anonymous ID (UUID) stored in browser localStorage.
-    
-    Important: This endpoint never blocks the frontend. Failures are logged but not returned.
+
+@router.post(
+    "/analytics/visit",
+    summary="Record anonymous visitor session",
+    response_model=AnalyticsResponse
+)
+def analytics_visit(
+    request: AnalyticsVisitRequest
+) -> AnalyticsResponse:
     """
+    Record an anonymous visitor session.
+
+    The visitor is identified using an anonymous UUID
+    stored in browser localStorage.
+
+    Analytics failures never break the frontend.
+    """
+
     try:
-        success = analytics_service.record_visit(request.visitor_id)
+        success = analytics_service.record_visit(
+            request.visitor_id
+        )
+
         if success:
-            return AnalyticsResponse(success=True, message="Visit recorded")
-        else:
-            logger.warning(f"Failed to record visit for visitor {request.visitor_id}")
-            return AnalyticsResponse(success=False, message="Visit not recorded")
+            return AnalyticsResponse(
+                success=True,
+                message="Visit recorded"
+            )
+
+        logger.warning(
+            "Failed to record visit for visitor %s",
+            request.visitor_id
+        )
+
+        return AnalyticsResponse(
+            success=False,
+            message="Visit not recorded"
+        )
+
     except Exception as e:
-        logger.error(f"Error in /analytics/visit endpoint: {e}")
-        # Return success=False but still 200 OK so frontend doesn't worry
-        return AnalyticsResponse(success=False, message="Recording service temporarily unavailable")
+
+        logger.error(
+            "Error in /analytics/visit endpoint: %s",
+            e
+        )
+
+        return AnalyticsResponse(
+            success=False,
+            message="Recording service temporarily unavailable"
+        )
 
 
-@router.post("/analytics/search", summary="Record anonymous search event", response_model=AnalyticsResponse)
-def analytics_search(request: AnalyticsSearchRequest) -> AnalyticsResponse:
-    """Record an anonymous search event.
-    
-    This endpoint tracks when a user performs a PubMed search. Records:
-    - Anonymous visitor ID
-    - Search query (truncated to 500 chars)
-    - Number of results returned to user
-    - Total results in PubMed index
-    - Search mode (hybrid or semantic_only)
-    
-    Important: This endpoint never blocks the frontend. Failures are logged but not returned.
+# ============================================================================
+# ANALYTICS SEARCH
+# ============================================================================
+
+@router.post(
+    "/analytics/search",
+    summary="Record anonymous search event",
+    response_model=AnalyticsResponse
+)
+def analytics_search(
+    request: AnalyticsSearchRequest
+) -> AnalyticsResponse:
     """
+    Record an anonymous search event.
+
+    Stores:
+    - Anonymous visitor ID
+    - Search query
+    - Number of results returned
+    - Total PubMed results
+    - Search mode
+    """
+
     try:
+
         success = analytics_service.record_search(
             request.visitor_id,
             request.search_query,
@@ -77,46 +154,100 @@ def analytics_search(request: AnalyticsSearchRequest) -> AnalyticsResponse:
             request.total_results,
             request.search_mode
         )
+
         if success:
-            return AnalyticsResponse(success=True, message="Search recorded")
-        else:
-            logger.warning(f"Failed to record search for visitor {request.visitor_id}")
-            return AnalyticsResponse(success=False, message="Search not recorded")
-    except Exception as e:
-        logger.error(f"Error in /analytics/search endpoint: {e}")
-        # Return success=False but still 200 OK so frontend doesn't worry
-        return AnalyticsResponse(success=False, message="Recording service temporarily unavailable")
+            return AnalyticsResponse(
+                success=True,
+                message="Search recorded"
+            )
 
-
-@router.get("/analytics/stats", summary="Get analytics statistics", response_model=AnalyticsStatsResponse)
-def analytics_stats() -> AnalyticsStatsResponse:
-    """Get current analytics statistics.
-    
-    Returns aggregated, anonymous statistics:
-    - Total and recent unique visitors
-    - Total and recent search counts
-    - Number of returning visitors
-    - Recent search queries
-    
-    This endpoint is public and does not require authentication.
-    """
-    try:
-        stats = analytics_service.get_statistics()
-        
-        # Ensure all required fields are present with safe defaults
-        return AnalyticsStatsResponse(
-            total_unique_visitors=stats.get("total_unique_visitors", 0),
-            today_unique_visitors=stats.get("today_unique_visitors", 0),
-            week_unique_visitors=stats.get("week_unique_visitors", 0),
-            total_searches=stats.get("total_searches", 0),
-            today_searches=stats.get("today_searches", 0),
-            week_searches=stats.get("week_searches", 0),
-            returning_visitors=stats.get("returning_visitors", 0),
-            recent_searches=stats.get("recent_searches", []),
-            timestamp=stats.get("timestamp", "")
+        logger.warning(
+            "Failed to record search for visitor %s",
+            request.visitor_id
         )
+
+        return AnalyticsResponse(
+            success=False,
+            message="Search not recorded"
+        )
+
     except Exception as e:
-        logger.error(f"Error in /analytics/stats endpoint: {e}")
+
+        logger.error(
+            "Error in /analytics/search endpoint: %s",
+            e
+        )
+
+        return AnalyticsResponse(
+            success=False,
+            message="Recording service temporarily unavailable"
+        )
+
+
+# ============================================================================
+# ANALYTICS STATISTICS
+# ============================================================================
+
+@router.get(
+    "/analytics/stats",
+    summary="Get analytics statistics",
+    response_model=AnalyticsStatsResponse
+)
+def analytics_stats() -> AnalyticsStatsResponse:
+    """
+    Return aggregated anonymous usage statistics.
+    """
+
+    try:
+
+        stats = analytics_service.get_statistics()
+
+        return AnalyticsStatsResponse(
+            total_unique_visitors=stats.get(
+                "total_unique_visitors",
+                0
+            ),
+            today_unique_visitors=stats.get(
+                "today_unique_visitors",
+                0
+            ),
+            week_unique_visitors=stats.get(
+                "week_unique_visitors",
+                0
+            ),
+            total_searches=stats.get(
+                "total_searches",
+                0
+            ),
+            today_searches=stats.get(
+                "today_searches",
+                0
+            ),
+            week_searches=stats.get(
+                "week_searches",
+                0
+            ),
+            returning_visitors=stats.get(
+                "returning_visitors",
+                0
+            ),
+            recent_searches=stats.get(
+                "recent_searches",
+                []
+            ),
+            timestamp=stats.get(
+                "timestamp",
+                ""
+            )
+        )
+
+    except Exception as e:
+
+        logger.error(
+            "Error in /analytics/stats endpoint: %s",
+            e
+        )
+
         return AnalyticsStatsResponse(
             total_unique_visitors=0,
             today_unique_visitors=0,
@@ -130,54 +261,79 @@ def analytics_stats() -> AnalyticsStatsResponse:
         )
 
 
-@router.get("/analytics/visitors", summary="Get all visitors in table format")
+# ============================================================================
+# ANALYTICS VISITORS
+# ============================================================================
+
+@router.get(
+    "/analytics/visitors",
+    summary="Get all visitors in table format"
+)
 def analytics_visitors() -> dict:
-    """Get all visitors with their activity details.
-    
-    Returns paginated visitor data including:
-    - Visitor ID
-    - First visit date
-    - Last visit date
-    - Visit count
-    - Total searches by that visitor
     """
+    Return visitor activity information.
+
+    Includes:
+    - Visitor ID
+    - First visit
+    - Last visit
+    - Visit count
+    - Total searches
+    """
+
     try:
+
         db = analytics_service.db
+
         with db.get_connection() as conn:
+
             cursor = conn.cursor()
-            
-            # Get visitor details with search counts
-            cursor.execute("""
-                SELECT 
+
+            cursor.execute(
+                """
+                SELECT
                     v.visitor_id,
                     v.first_visit_at,
                     v.last_visit_at,
                     v.visit_count,
-                    COUNT(DISTINCT s.id) as total_searches
+                    COUNT(DISTINCT s.id) AS total_searches
                 FROM visits v
-                LEFT JOIN searches s ON v.visitor_id = s.visitor_id
+                LEFT JOIN searches s
+                    ON v.visitor_id = s.visitor_id
                 GROUP BY v.visitor_id
                 ORDER BY v.last_visit_at DESC
-            """)
-            
+                """
+            )
+
             rows = cursor.fetchall()
+
             visitors = []
+
             for row in rows:
-                visitors.append({
-                    "visitor_id": row["visitor_id"],
-                    "first_visit": row["first_visit_at"],
-                    "last_visit": row["last_visit_at"],
-                    "visit_count": row["visit_count"],
-                    "total_searches": row["total_searches"]
-                })
-            
+
+                visitors.append(
+                    {
+                        "visitor_id": row["visitor_id"],
+                        "first_visit": row["first_visit_at"],
+                        "last_visit": row["last_visit_at"],
+                        "visit_count": row["visit_count"],
+                        "total_searches": row["total_searches"]
+                    }
+                )
+
             return {
                 "success": True,
                 "count": len(visitors),
                 "visitors": visitors
             }
+
     except Exception as e:
-        logger.error(f"Error in /analytics/visitors endpoint: {e}")
+
+        logger.error(
+            "Error in /analytics/visitors endpoint: %s",
+            e
+        )
+
         return {
             "success": False,
             "count": 0,
@@ -186,27 +342,52 @@ def analytics_visitors() -> dict:
         }
 
 
-@router.get("/analytics/searches", summary="Get all searches in table format")
-def analytics_searches(limit: int = Query(100, ge=1, le=1000), days: int = Query(7, ge=1)) -> dict:
-    """Get recent searches in table format.
-    
-    Args:
-        limit: Maximum number of searches to return (default 100)
-        days: Only include searches from last N days (default 7)
-    
-    Returns:
-        List of searches with visitor info and timestamps
+# ============================================================================
+# ANALYTICS SEARCH HISTORY
+# ============================================================================
+
+@router.get(
+    "/analytics/searches",
+    summary="Get all searches in table format"
+)
+def analytics_searches(
+    limit: int = Query(
+        100,
+        ge=1,
+        le=1000
+    ),
+    days: int = Query(
+        7,
+        ge=1
+    )
+) -> dict:
     """
+    Return recent search history.
+
+    Args:
+        limit:
+            Maximum number of searches.
+
+        days:
+            Only return searches from the last N days.
+    """
+
     try:
+
         db = analytics_service.db
+
         with db.get_connection() as conn:
+
             cursor = conn.cursor()
-            
-            from datetime import datetime, timedelta
-            cutoff = datetime.now() - timedelta(days=days)
-            
-            cursor.execute("""
-                SELECT 
+
+            cutoff = (
+                datetime.now()
+                - timedelta(days=days)
+            )
+
+            cursor.execute(
+                """
+                SELECT
                     s.id,
                     s.visitor_id,
                     s.search_query,
@@ -218,29 +399,45 @@ def analytics_searches(limit: int = Query(100, ge=1, le=1000), days: int = Query
                 WHERE s.timestamp >= ?
                 ORDER BY s.timestamp DESC
                 LIMIT ?
-            """, (cutoff, limit))
-            
+                """,
+                (
+                    cutoff,
+                    limit
+                )
+            )
+
             rows = cursor.fetchall()
+
             searches = []
+
             for row in rows:
-                searches.append({
-                    "id": row["id"],
-                    "visitor_id": row["visitor_id"],
-                    "search_query": row["search_query"],
-                    "result_count": row["result_count"],
-                    "total_results": row["total_results"],
-                    "search_mode": row["search_mode"],
-                    "timestamp": row["timestamp"]
-                })
-            
+
+                searches.append(
+                    {
+                        "id": row["id"],
+                        "visitor_id": row["visitor_id"],
+                        "search_query": row["search_query"],
+                        "result_count": row["result_count"],
+                        "total_results": row["total_results"],
+                        "search_mode": row["search_mode"],
+                        "timestamp": row["timestamp"]
+                    }
+                )
+
             return {
                 "success": True,
                 "count": len(searches),
                 "limit_days": days,
                 "searches": searches
             }
+
     except Exception as e:
-        logger.error(f"Error in /analytics/searches endpoint: {e}")
+
+        logger.error(
+            "Error in /analytics/searches endpoint: %s",
+            e
+        )
+
         return {
             "success": False,
             "count": 0,
@@ -249,36 +446,61 @@ def analytics_searches(limit: int = Query(100, ge=1, le=1000), days: int = Query
         }
 
 
-@router.get("/analytics/visitor/{visitor_id}", summary="Get details for specific visitor")
-def analytics_visitor_details(visitor_id: str) -> dict:
-    """Get all details for a specific visitor.
-    
-    Args:
-        visitor_id: The visitor ID to get details for
-    
-    Returns:
-        Visitor visit history and all their searches
+# ============================================================================
+# ANALYTICS SPECIFIC VISITOR
+# ============================================================================
+
+@router.get(
+    "/analytics/visitor/{visitor_id}",
+    summary="Get details for specific visitor"
+)
+def analytics_visitor_details(
+    visitor_id: str
+) -> dict:
     """
+    Return complete activity information
+    for a specific anonymous visitor.
+    """
+
     try:
+
         db = analytics_service.db
+
         with db.get_connection() as conn:
+
             cursor = conn.cursor()
-            
-            # Get visitor visit info
-            cursor.execute("""
-                SELECT * FROM visits WHERE visitor_id = ?
-            """, (visitor_id,))
+
+            # ------------------------------------------------------------
+            # Visitor information
+            # ------------------------------------------------------------
+
+            cursor.execute(
+                """
+                SELECT *
+                FROM visits
+                WHERE visitor_id = ?
+                """,
+                (visitor_id,)
+            )
+
             visit_row = cursor.fetchone()
-            
+
             if not visit_row:
+
                 return {
                     "success": False,
-                    "error": f"Visitor {visitor_id} not found"
+                    "error": (
+                        f"Visitor {visitor_id} not found"
+                    )
                 }
-            
-            # Get all searches by this visitor
-            cursor.execute("""
-                SELECT 
+
+            # ------------------------------------------------------------
+            # Search history
+            # ------------------------------------------------------------
+
+            cursor.execute(
+                """
+                SELECT
                     id,
                     search_query,
                     result_count,
@@ -288,19 +510,25 @@ def analytics_visitor_details(visitor_id: str) -> dict:
                 FROM searches
                 WHERE visitor_id = ?
                 ORDER BY timestamp DESC
-            """, (visitor_id,))
-            
+                """,
+                (visitor_id,)
+            )
+
             searches = []
+
             for row in cursor.fetchall():
-                searches.append({
-                    "id": row["id"],
-                    "search_query": row["search_query"],
-                    "result_count": row["result_count"],
-                    "total_results": row["total_results"],
-                    "search_mode": row["search_mode"],
-                    "timestamp": row["timestamp"]
-                })
-            
+
+                searches.append(
+                    {
+                        "id": row["id"],
+                        "search_query": row["search_query"],
+                        "result_count": row["result_count"],
+                        "total_results": row["total_results"],
+                        "search_mode": row["search_mode"],
+                        "timestamp": row["timestamp"]
+                    }
+                )
+
             return {
                 "success": True,
                 "visitor": {
@@ -312,161 +540,623 @@ def analytics_visitor_details(visitor_id: str) -> dict:
                 },
                 "searches": searches
             }
+
     except Exception as e:
-        logger.error(f"Error in /analytics/visitor endpoint: {e}")
+
+        logger.error(
+            "Error in /analytics/visitor endpoint: %s",
+            e
+        )
+
         return {
             "success": False,
             "error": str(e)
         }
 
 
+# ============================================================================
+# PUBMED SEARCH
+# CONTINUOUS GLOBAL RANKING + PAGINATION
+# ============================================================================
 
-@router.get("/search", summary="Search PubMed articles", response_model=SearchResponse, responses={400: {"model": ErrorResponse}, 503: {"model": ErrorResponse}})
+@router.get(
+    "/search",
+    summary="Search PubMed articles",
+    response_model=SearchResponse,
+    responses={
+        400: {"model": ErrorResponse},
+        503: {"model": ErrorResponse}
+    }
+)
 def search_pubmed(
-    query: str = Query(..., min_length=1, description="Natural language search query."),
-    year_from: Optional[int] = Query(None, description="Filter articles published after or in this year."),
-    year_to: Optional[int] = Query(None, description="Filter articles published before or in this year."),
-    article_types: Optional[str] = Query(None, description="Comma-separated article types like Review, Clinical Trial, Meta-Analysis."),
-    free_full_text: Optional[bool] = Query(False, description="Return only articles with free full text."),
-    limit: Optional[int] = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT, description="Maximum number of articles returned."),
-    page: Optional[int] = Query(DEFAULT_PAGE, ge=1, description="Page number for pagination."),
-    semantic_only: Optional[bool] = Query(False, description="If true, rank results by semantic similarity only."),
-    visitor_id: Optional[str] = Query(None, description="Anonymous visitor ID for analytics tracking (optional)"),
+    query: str = Query(
+        ...,
+        min_length=1,
+        description="Natural language search query."
+    ),
+
+    year_from: Optional[int] = Query(
+        None,
+        description="Filter articles published after or in this year."
+    ),
+
+    year_to: Optional[int] = Query(
+        None,
+        description="Filter articles published before or in this year."
+    ),
+
+    article_types: Optional[str] = Query(
+        None,
+        description=(
+            "Comma-separated article types like "
+            "Review, Clinical Trial, Meta-Analysis."
+        )
+    ),
+
+    free_full_text: Optional[bool] = Query(
+        False,
+        description="Return only articles with free full text."
+    ),
+
+    limit: Optional[int] = Query(
+        DEFAULT_LIMIT,
+        ge=1,
+        le=MAX_LIMIT,
+        description="Maximum number of articles returned."
+    ),
+
+    page: Optional[int] = Query(
+        DEFAULT_PAGE,
+        ge=1,
+        description="Page number for pagination."
+    ),
+
+    semantic_only: Optional[bool] = Query(
+        False,
+        description=(
+            "If true, rank results by semantic similarity only."
+        )
+    ),
+
+    visitor_id: Optional[str] = Query(
+        None,
+        description=(
+            "Anonymous visitor ID for analytics tracking."
+        )
+    ),
 ):
+
+    # ========================================================================
+    # STEP 1: PREPROCESS QUERY
+    # ========================================================================
+
     cleaned_query = preprocess_query(query)
+
     if not cleaned_query:
-        raise HTTPException(status_code=400, detail="Query must not be empty.")
 
-    article_types_list = [t.strip() for t in article_types.split(",") if t.strip()] if article_types else []
-    search_term = build_pubmed_term(cleaned_query, article_types_list, year_from, year_to, free_full_text)
-
-    logger.info("Search request: original_user_query='%s' final_pubmed_query='%s'", query, search_term)
-    candidate_pool_limit = RE_RANK_TOP_K
-    try:
-        # Rank the full configured candidate pool before pagination so the best
-        # matches are ordered correctly across the current page selection.
-        search_result = pubmed_service.search_ids(search_term, page=1, limit=candidate_pool_limit)
-    except httpx.HTTPError:
-        logger.exception("ESearch failed for query=%s", search_term)
-        raise HTTPException(status_code=503, detail="Unable to connect to PubMed. Please try again.")
-
-    total_results = search_result.get("count", 0)
-    ids = search_result.get("ids", [])
-    if total_results == 0 or not ids:
-        logger.info("PubMed returned zero results for query='%s' (count=%s, ids=%s)", search_term, total_results, len(ids))
-        raise HTTPException(status_code=404, detail="No PubMed articles found for this query.")
-
-    candidate_ids = ids[: min(len(ids), RE_RANK_TOP_K)]
-    try:
-        articles = pubmed_service.fetch_articles(candidate_ids)
-        logger.info("Fetched %s articles for %s PMIDs from query='%s'", len(articles), len(candidate_ids), search_term)
-    except httpx.HTTPError:
-        logger.exception("EFetch failed for pmids=%s on query=%s", candidate_ids, search_term)
-        raise HTTPException(status_code=503, detail="Unable to connect to PubMed. Please try again.")
-
-    if not articles and total_results > 0:
-        logger.warning(
-            "PubMed ESearch returned %s total results and %s PMIDs, but EFetch produced zero parsed articles for query='%s'.",
-            total_results,
-            len(candidate_ids),
-            search_term,
+        raise HTTPException(
+            status_code=400,
+            detail="Query must not be empty."
         )
 
-    query_terms = [term.strip() for term in cleaned_query.split() if term.strip()]
-    query_embedding = embedding_service.get_query_embedding(cleaned_query)
-    article_embeddings = embedding_service.get_article_embeddings(articles)
-    
-    # STEP 1: Score and rank all fetched articles by relevance_score (descending)
-    # The ranking_service.score_articles() or semantic_rerank() returns articles
-    # sorted by relevance_score from highest to lowest.
-    if semantic_only:
-        scored_articles = ranking_service.semantic_rerank(query_embedding, article_embeddings, articles)
-    else:
-        scored_articles = ranking_service.score_articles(cleaned_query, query_terms, articles, query_embedding, article_embeddings)
+    # ========================================================================
+    # STEP 2: ARTICLE TYPE FILTERS
+    # ========================================================================
 
-    # STEP 1.5: Filter out low-relevance articles (0% or near-0% match)
-    # Only keep articles that meet the minimum relevance threshold
-    filtered_articles = [
-        article for article in scored_articles 
-        if article.get("relevance_score", 0.0) >= MIN_RELEVANCE_THRESHOLD
-    ]
-    
-    if not filtered_articles:
-        # If all articles are filtered out, still return something for UX
-        # Use top 1 article if available, or raise 404
-        if scored_articles:
-            filtered_articles = scored_articles[:1]
-        else:
-            raise HTTPException(status_code=404, detail="No articles with meaningful relevance scores found.")
-    
-    scored_articles = filtered_articles
-
-    # STEP 2: Apply pagination AFTER ranking and filtering (not before)
-    # This ensures continuous ranking across pages:
-    # - Page 1: articles ranked #1-#10 (indices 0-9)
-    # - Page 2: articles ranked #11-#20 (indices 10-19)
-    # - Page 3: articles ranked #21-#30 (indices 20-29)
-    # etc.
-    offset = (page - 1) * limit
-    scored_articles = scored_articles[offset : offset + limit]
-
-    top_mesh_terms = {}
-    for article in scored_articles:
-        for mesh in article.get("mesh_terms", []):
-            top_mesh_terms[mesh] = top_mesh_terms.get(mesh, 0) + 1
-
-    mesh_items = sorted(
-        [{"term": term, "count": count} for term, count in top_mesh_terms.items()],
-        key=lambda item: item["count"],
-        reverse=True,
+    article_types_list = (
+        [
+            t.strip()
+            for t in article_types.split(",")
+            if t.strip()
+        ]
+        if article_types
+        else []
     )
 
-    results = [
-        {
-            "pmid": article.get("pmid", ""),
-            "title": article.get("title", ""),
-            "abstract": truncate_text(article.get("abstract", ""), 300),
-            "authors": article.get("authors", []),
-            "journal": article.get("journal", ""),
-            "publication_date": article.get("publication_date", ""),
-            "article_type": article.get("article_type", ""),
-            "mesh_terms": article.get("mesh_terms", []),
-            "doi": article.get("doi", ""),
-            "pubmed_url": f"https://pubmed.ncbi.nlm.nih.gov/{article.get('pmid', '')}/",
-            "semantic_score": article.get("semantic_score", 0.0),
-            "keyword_score": article.get("keyword_score", 0.0),
-            "relevance_score": article.get("relevance_score", 0.0),
-        }
-        for article in scored_articles
+    # ========================================================================
+    # STEP 3: BUILD PUBMED QUERY
+    # ========================================================================
+
+    search_term = build_pubmed_term(
+        cleaned_query,
+        article_types_list,
+        year_from,
+        year_to,
+        free_full_text
+    )
+
+    logger.info(
+        "Search request: original_user_query='%s' "
+        "final_pubmed_query='%s'",
+        query,
+        search_term
+    )
+
+    # ========================================================================
+    # STEP 4: RETRIEVE ONE COMMON CANDIDATE POOL
+    #
+    # IMPORTANT:
+    #
+    # We ALWAYS request page=1 here.
+    #
+    # We do NOT request:
+    #
+    #     page=page
+    #
+    # because that would cause every page to be ranked independently.
+    #
+    # Instead:
+    #
+    # PubMed candidates
+    #       ↓
+    # Global ranking
+    #       ↓
+    # Filtering
+    #       ↓
+    # Pagination
+    #
+    # ========================================================================
+
+    candidate_pool_limit = RE_RANK_TOP_K
+
+    try:
+
+        search_result = pubmed_service.search_ids(
+            search_term,
+            page=1,
+            limit=candidate_pool_limit
+        )
+
+    except httpx.HTTPError:
+
+        logger.exception(
+            "ESearch failed for query=%s",
+            search_term
+        )
+
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Unable to connect to PubMed. "
+                "Please try again."
+            )
+        )
+
+    # ========================================================================
+    # STEP 5: PUBMED RESULT COUNT
+    # ========================================================================
+
+    total_results = search_result.get(
+        "count",
+        0
+    )
+
+    ids = search_result.get(
+        "ids",
+        []
+    )
+
+    if total_results == 0 or not ids:
+
+        logger.info(
+            "PubMed returned zero results for query='%s' "
+            "(count=%s, ids=%s)",
+            search_term,
+            total_results,
+            len(ids)
+        )
+
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "No PubMed articles found "
+                "for this query."
+            )
+        )
+
+    # ========================================================================
+    # STEP 6: LIMIT CANDIDATE IDS
+    # ========================================================================
+
+    candidate_ids = ids[
+        :min(
+            len(ids),
+            RE_RANK_TOP_K
+        )
     ]
 
-    # Calculate total meaningful results (after filtering low-relevance articles)
-    total_meaningful_results = len(filtered_articles)
+    # ========================================================================
+    # STEP 7: FETCH ARTICLES
+    # ========================================================================
+
+    try:
+
+        articles = pubmed_service.fetch_articles(
+            candidate_ids
+        )
+
+        logger.info(
+            "Fetched %s articles for %s PMIDs "
+            "from query='%s'",
+            len(articles),
+            len(candidate_ids),
+            search_term
+        )
+
+    except httpx.HTTPError:
+
+        logger.exception(
+            "EFetch failed for pmids=%s "
+            "on query=%s",
+            candidate_ids,
+            search_term
+        )
+
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Unable to connect to PubMed. "
+                "Please try again."
+            )
+        )
+
+    if not articles:
+
+        logger.warning(
+            "PubMed returned %s total results and %s PMIDs, "
+            "but EFetch produced zero parsed articles.",
+            total_results,
+            len(candidate_ids)
+        )
+
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "Unable to retrieve PubMed "
+                "articles."
+            )
+        )
+
+    # ========================================================================
+    # STEP 8: CREATE QUERY EMBEDDING
+    # ========================================================================
+
+    query_terms = [
+        term.strip()
+        for term in cleaned_query.split()
+        if term.strip()
+    ]
+
+    query_embedding = (
+        embedding_service.get_query_embedding(
+            cleaned_query
+        )
+    )
+
+    article_embeddings = (
+        embedding_service.get_article_embeddings(
+            articles
+        )
+    )
+
+    # ========================================================================
+    # STEP 9: GLOBAL RANKING
+    #
+    # ALL candidate articles are scored BEFORE pagination.
+    #
+    # ========================================================================
+
+    if semantic_only:
+
+        scored_articles = (
+            ranking_service.semantic_rerank(
+                query_embedding,
+                article_embeddings,
+                articles
+            )
+        )
+
+    else:
+
+        scored_articles = (
+            ranking_service.score_articles(
+                cleaned_query,
+                query_terms,
+                articles,
+                query_embedding,
+                article_embeddings
+            )
+        )
+
+    # ========================================================================
+    # STEP 10: EXPLICIT GLOBAL SORT
+    #
+    # Ensure highest relevance_score comes first.
+    # ========================================================================
+
+    scored_articles = sorted(
+        scored_articles,
+        key=lambda article: article.get(
+            "relevance_score",
+            0.0
+        ),
+        reverse=True
+    )
+
+    # ========================================================================
+    # STEP 11: FILTER LOW RELEVANCE ARTICLES
+    # ========================================================================
+
+    filtered_articles = [
+        article
+        for article in scored_articles
+        if article.get(
+            "relevance_score",
+            0.0
+        ) >= MIN_RELEVANCE_THRESHOLD
+    ]
+
+    # ========================================================================
+    # STEP 12: FALLBACK
+    # ========================================================================
+
+    if not filtered_articles:
+
+        if scored_articles:
+
+            filtered_articles = [
+                scored_articles[0]
+            ]
+
+        else:
+
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    "No articles with meaningful "
+                    "relevance scores found."
+                )
+            )
+
+    # ========================================================================
+    # STEP 13: SORT AGAIN AFTER FILTERING
+    #
+    # Guarantees continuous ranking.
+    # ========================================================================
+
+    filtered_articles = sorted(
+        filtered_articles,
+        key=lambda article: article.get(
+            "relevance_score",
+            0.0
+        ),
+        reverse=True
+    )
+
+    # ========================================================================
+    # STEP 14: CONTINUOUS PAGINATION
+    #
+    # IMPORTANT:
+    #
+    # Pagination happens AFTER global ranking.
+    #
+    # Page 1:
+    #   rank 1 - 10
+    #
+    # Page 2:
+    #   rank 11 - 20
+    #
+    # Page 3:
+    #   rank 21 - 30
+    #
+    # ========================================================================
+
+    offset = (
+        (page - 1)
+        * limit
+    )
+
+    paginated_articles = filtered_articles[
+        offset:
+        offset + limit
+    ]
+
+    logger.info(
+        "Continuous pagination: "
+        "page=%s, limit=%s, offset=%s, "
+        "ranked_articles=%s, returned=%s",
+        page,
+        limit,
+        offset,
+        len(filtered_articles),
+        len(paginated_articles)
+    )
+
+    # ========================================================================
+    # STEP 15: MESH TERMS
+    # ========================================================================
+
+    top_mesh_terms = {}
+
+    for article in paginated_articles:
+
+        for mesh in article.get(
+            "mesh_terms",
+            []
+        ):
+
+            top_mesh_terms[mesh] = (
+                top_mesh_terms.get(
+                    mesh,
+                    0
+                ) + 1
+            )
+
+    mesh_items = sorted(
+        [
+            {
+                "term": term,
+                "count": count
+            }
+            for term, count
+            in top_mesh_terms.items()
+        ],
+        key=lambda item: item["count"],
+        reverse=True
+    )
+
+    # ========================================================================
+    # STEP 16: FORMAT RESULTS
+    # ========================================================================
+
+    results = []
+
+    for article in paginated_articles:
+
+        results.append(
+            {
+                "pmid": article.get(
+                    "pmid",
+                    ""
+                ),
+
+                "title": article.get(
+                    "title",
+                    ""
+                ),
+
+                "abstract": truncate_text(
+                    article.get(
+                        "abstract",
+                        ""
+                    ),
+                    300
+                ),
+
+                "authors": article.get(
+                    "authors",
+                    []
+                ),
+
+                "journal": article.get(
+                    "journal",
+                    ""
+                ),
+
+                "publication_date": article.get(
+                    "publication_date",
+                    ""
+                ),
+
+                "article_type": article.get(
+                    "article_type",
+                    ""
+                ),
+
+                "mesh_terms": article.get(
+                    "mesh_terms",
+                    []
+                ),
+
+                "doi": article.get(
+                    "doi",
+                    ""
+                ),
+
+                "pubmed_url": (
+                    "https://pubmed.ncbi.nlm.nih.gov/"
+                    f"{article.get('pmid', '')}/"
+                ),
+
+                "semantic_score": article.get(
+                    "semantic_score",
+                    0.0
+                ),
+
+                "keyword_score": article.get(
+                    "keyword_score",
+                    0.0
+                ),
+
+                "relevance_score": article.get(
+                    "relevance_score",
+                    0.0
+                ),
+            }
+        )
+
+    # ========================================================================
+    # STEP 17: TOTAL MEANINGFUL RESULTS
+    # ========================================================================
+
+    total_meaningful_results = len(
+        filtered_articles
+    )
+
+    # ========================================================================
+    # STEP 18: RESPONSE
+    # ========================================================================
 
     response = {
         "query": cleaned_query,
-        "total_results": total_results,  # Total PubMed index results
-        "total_meaningful_results": total_meaningful_results,  # After filtering by relevance threshold
+
+        # Total number of results available in PubMed
+        "total_results": total_results,
+
+        # Number of results surviving relevance filtering
+        "total_meaningful_results": (
+            total_meaningful_results
+        ),
+
         "page": page,
+
         "limit": limit,
-        "top_mesh_terms": mesh_items[:10],
-        "concepts": extract_concepts(cleaned_query),
+
+        "top_mesh_terms": (
+            mesh_items[:10]
+        ),
+
+        "concepts": extract_concepts(
+            cleaned_query
+        ),
+
         "results": results,
     }
 
-    # Record search event in analytics (non-blocking, fire-and-forget)
-    # This ensures analytics failure never breaks the search functionality
+    # ========================================================================
+    # STEP 19: ANALYTICS
+    # ========================================================================
+
     if visitor_id:
+
         try:
+
             analytics_service.record_search(
                 visitor_id=visitor_id,
                 search_query=cleaned_query,
-                result_count=len(results),  # Results returned on current page
-                total_results=total_results,  # Total in PubMed index
-                search_mode="semantic_only" if semantic_only else "hybrid"
+                result_count=len(results),
+                total_results=total_results,
+                search_mode=(
+                    "semantic_only"
+                    if semantic_only
+                    else "hybrid"
+                )
             )
+
         except Exception as e:
-            logger.error(f"Failed to record analytics for visitor {visitor_id}: {e}")
-            # Do NOT propagate the error - search succeeded, analytics failed is acceptable
+
+            logger.error(
+                "Failed to record analytics "
+                "for visitor %s: %s",
+                visitor_id,
+                e
+            )
+
+            # Never allow analytics failure
+            # to break the search request.
+
+    # ========================================================================
+    # STEP 20: RETURN
+    # ========================================================================
 
     return response

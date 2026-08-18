@@ -55,52 +55,13 @@ def truncate_term(word: str, min_root: int = 4) -> str:
 
 
 def build_truncated_variant(query: str) -> str:
-    """Build a wildcard-truncated version of a query's significant words.
-
-    To keep PubMed searches from becoming too broad, we only apply truncation to
-    multi-word phrases when the caller explicitly asks for variant expansion. Plain
-    single-term or phrase queries stay as written.
-    """
-    tokens = [t for t in re.split(r"[\s,]+", (query or "").lower()) if t]
-    if len(tokens) <= 1:
-        return ""
+    """Build a wildcard-truncated version of a query's significant words,
+    so PubMed's own ESearch retrieves word-variant matches (e.g. 'editing'
+    also finds 'edited', 'edits') without the user needing to know
+    truncation syntax exists."""
+    tokens = [t for t in re.split(r"[\s,]+", query.lower()) if t]
     truncated = [truncate_term(t) for t in tokens if t not in STOPWORDS]
     return " AND ".join(truncated) if truncated else ""
-
-
-def build_boolean_pubmed_query(query: str) -> str:
-    """Convert a natural-language phrase into a conservative PubMed boolean query.
-
-    This keeps the query explicit and readable, while still expanding a few common
-    synonyms and medical terms that PubMed users often search for.
-    """
-    normalized_query = preprocess_query(query or "")
-    if not normalized_query:
-        return ""
-
-    synonyms = {
-        "fever": ["fever", "pyrexia"],
-        "children": ["children", "pediatric"],
-        "child": ["child", "pediatric"],
-        "pain": ["pain", "ache"],
-        "medicine": ["medicine", "medication", "drug"],
-        "inflammation": ["inflammation", "inflammatory"],
-        "diabetes": ["diabetes", "diabetic"],
-        "kidney": ["kidney", "renal"],
-        "disease": ["disease", "disorder"],
-    }
-
-    query_terms = [term for term in re.split(r"[\s,]+", normalized_query.lower()) if term and term not in STOPWORDS]
-    if not query_terms:
-        return normalized_query
-
-    parts = []
-    for term in query_terms:
-        variants = synonyms.get(term, [term])
-        term_group = " OR ".join(f"{variant}[tiab]" for variant in variants)
-        parts.append(f"({term_group})")
-
-    return " AND ".join(parts)
 
 
 def build_pubmed_term(query: str, article_types: List[str] = None, year_from: int | None = None, year_to: int | None = None, free_full_text: bool | None = None) -> str:
@@ -117,10 +78,11 @@ def build_pubmed_term(query: str, article_types: List[str] = None, year_from: in
             ])
             query_parts.append(f"({term_group})")
         else:
-            # Keep the authored query literal rather than broad wildcard expansions.
-            # This avoids PubMed searches that become too broad and explode the
-            # candidate set before ranking.
-            query_parts.append(normalized_query)
+            truncated_variant = build_truncated_variant(normalized_query)
+            if truncated_variant and truncated_variant != normalized_query.lower():
+                query_parts.append(f"({normalized_query} OR ({truncated_variant}))")
+            else:
+                query_parts.append(normalized_query)
 
     if article_types:
         type_filters = []

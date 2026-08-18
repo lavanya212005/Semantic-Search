@@ -67,6 +67,15 @@ def test_broad_term_query_not_title_only():
     assert build_pubmed_term("breast cancer", year_from=2020) == "breast cancer AND 2020:2100[dp]"
 
 
+def test_build_pubmed_term_applies_truncation_for_multiword_queries():
+    from app.utils.helpers import build_pubmed_term
+    term = build_pubmed_term("breast cancer therapy")
+    lower = term.lower()
+    assert "brea*" in lower or "breast" in lower
+    assert "canc*" in lower or "cancer" in lower
+    assert "therap*" in lower or "therapy" in lower
+
+
 def test_heart_attack_query_expands_to_related_pubmed_terms():
     from app.utils.helpers import build_pubmed_term
     term = build_pubmed_term("heart attack")

@@ -6,6 +6,7 @@ import ArticleDetailModal from './components/ArticleDetailModal';
 import SavedArticlesDrawer from './components/SavedArticlesDrawer';
 import AnalyticsBar from './components/AnalyticsBar';
 import AIOverview from './components/AIOverview';
+import AdminSearchHistory from './components/AdminSearchHistory';
 import { getOrCreateVisitorId, recordVisit, recordSearch } from './utils/analytics';
 import {
   Search,
